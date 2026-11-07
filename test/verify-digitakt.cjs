@@ -45,18 +45,22 @@ async function verify(file) {
   const sampleSlot = 1;
   const selector = kit(active.at(-1)) + 0x3c + 0x64;
   const first = { ...source, image: source.image.slice() };
-  // Set up two different slot A001 identities and make the second pattern use its own A001.
-  Archive.view(first.image).setUint32(sampleTable, 1);
-  Archive.view(different.image).setUint32(sampleTable, 2);
+  // Give the two sources different A001 samples and make A002 the first free destination.
+  Archive.view(first.image).setUint32(sampleTable + 16, 0xffffffff);
+  const firstData = Archive.view(first.image), secondData = Archive.view(different.image);
+  for (const [data, hash] of [[firstData, 0x55aa0001], [secondData, 0x55aa0002]]) {
+    data.setUint32(sampleTable, 1);
+    data.setUint32(sampleTable + 4, hash);
+    data.setUint32(sampleTable + 8, 0x200);
+  }
   Archive.view(different.image).setUint16(selector, sampleSlot);
   different.image[selector - 0x64 + 0xd2] = 0;
   const combined = await Digitakt.compose(template, [first, different], layout);
   const merged = await Digitakt.parse(new Uint8Array(await combined.bytes.arrayBuffer()), "merged-banks.dt2prj");
   const moved = Archive.view(merged.image).getUint16(kit(127) + 0x3c + 0x64);
-  assert.notEqual(moved, sampleSlot);
-  assert.equal(moved % 128, sampleSlot);
-  assert.equal(Archive.view(merged.image).getUint32(sampleTable), 1);
-  assert.equal(Archive.view(merged.image).getUint32(sampleTable + (moved - 1) * 16), 2);
+  assert.equal(moved, 2);
+  assert.equal(Archive.view(merged.image).getUint32(sampleTable + 4), 0x55aa0001);
+  assert.equal(Archive.view(merged.image).getUint32(sampleTable + (moved - 1) * 16 + 4), 0x55aa0002);
   assert.equal(Archive.view(different.image).getUint16(selector), sampleSlot);
   // Two different presets in the first slot must both survive the merge.
   const pool = 0xda5a04, presetSize = 1109;
@@ -69,16 +73,21 @@ async function verify(file) {
   const withB = { ...other, image: source.image.slice() };
   withA.image.set(presetA, pool);
   withB.image.set(presetB, pool);
+  const lock = pattern(active.at(-1)) + 4 + 0x400;
+  withB.image[lock] = 0;
   const presets = await Digitakt.compose(template, [withA, withB], layout);
   const presetExport = await Digitakt.parse(new Uint8Array(await presets.bytes.arrayBuffer()), "merged-presets.dt2prj");
   assert.deepEqual(presetExport.image.subarray(pool, pool + presetSize), presetA);
-  assert(Array.from({ length: 127 }, (_, i) => pool + (i + 1) * presetSize)
-    .some(offset => Buffer.compare(presetExport.image.subarray(offset, offset + presetSize), presetB) === 0));
-  withB.image[pattern(active.at(-1)) + 4 + 0x400] = 0;
-  await assert.rejects(Digitakt.compose(template, [withA, withB], layout), /has preset locks/);
+  const targetPreset = presetExport.image[pattern(127) + 4 + 0x400];
+  assert(targetPreset > 0 && targetPreset < 128);
+  const targetPresetAt = pool + targetPreset * presetSize;
+  assert.deepEqual(presetExport.image.subarray(targetPresetAt, targetPresetAt + presetSize), presetB);
+  assert.equal(withB.image[lock], 0);
+  withB.image[lock] = 128;
+  await assert.rejects(Digitakt.compose(template, [withA, withB], layout), /missing or unsupported preset slot/);
   const kits = await Digitakt.kitBackup([source]);
   assert.equal(kits.count, active.length);
-  console.log("Digitakt II archive round trip, paired kits, sample and preset pool merging, lock guard and kit catalog passed.");
+  console.log("Digitakt II archive round trip, paired kits, sample packing, preset lock remapping and kit catalog passed.");
 }
 
 verify(process.argv[2]).catch(error => { console.error(error); process.exitCode = 1; });
