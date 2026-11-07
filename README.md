@@ -6,6 +6,11 @@
 
 A Windows project editor for arranging live sets from local Elektron backups. Browse patterns, place them in banks A–H, and export a new project for Elektron Transfer. The long-term goal is one editor with a separate format adapter for every Elektron machine that can back up editable projects.
 
+## Latest Beta 0.1 update
+
+- **Digitakt II pool merging.** EPC keeps the starting project's sample slots, reuses matching audio, and fills free slots in order from bank A through H. It merges preset pools and updates track assignments, sample locks, and preset locks when slots move.
+- **Verified with OS 1.15C backups.** Four projects merged into 91 consecutive sample slots in bank A. The export preserved the sample references on all 15 sample locks. A separate test with a preset slot conflict confirmed the preset lock still pointed to the intended preset. Playback after restoring to hardware and OS 1.17 compatibility still need testing.
+
 ## What works today
 
 | Device | Files | Current coverage |
@@ -52,6 +57,8 @@ I’m building EPC to make it easier to pull together a live set from the projec
 - Improve the Windows UI or add validation around an existing device adapter.
 
 Only attach fixtures you created and can share publicly. A description and reproducible steps are useful even when you keep your music and samples private.
+
+When a new feature is verified, update this README with what changed and what was tested.
 
 ## Format notes
 
