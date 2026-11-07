@@ -551,15 +551,19 @@ const Native = (() => {
     return STARTS[type] + slot * SIZES[type];
   }
 
-  function records(image) {
+  function records(image, version) {
     const dv = view(image);
     const objects = {};
     const expected = { [pattern]: 5, [kit]: 6, [sound]: 0xbeefbace, [settings]: 3 };
+    const names = { [pattern]: "pattern", [kit]: "kit", [sound]: "sound", [settings]: "settings" };
     for (const type of [pattern, kit, sound, settings]) {
       const count = type === settings ? 1 : 128;
       objects[type] = Array.from({ length: count }, (_, slot) => {
         const start = offset(type, slot);
-        assert(dv.getUint32(start) === expected[type], "Unsupported Rytm pattern, kit, sound or settings layout.");
+        const actual = dv.getUint32(start);
+        const settingsV4 = type === settings && version === 9 && actual === 4;
+        assert(actual === expected[type] || settingsV4,
+          "Unsupported Rytm " + names[type] + " layout (record " + (slot + 1) + ", marker 0x" + actual.toString(16) + ").");
         return { raw: image.subarray(start, start + SIZES[type]) };
       });
     }
@@ -580,7 +584,7 @@ const Native = (() => {
       && typeof manifest.FirmwareVersion === "string" && Archive.path(manifest.Payload),
     "Expected an Analog Rytm Transfer project archive.");
     const payload = decodePayload(await Archive.inflate(entries.get(manifest.Payload), 3 * 1024 * 1024));
-    const objects = records(payload.image);
+    const objects = records(payload.image, payload.version);
     const declaredAudio = new Map();
     assert(manifest.Samples === undefined || Array.isArray(manifest.Samples), "Invalid Transfer sample manifest.");
     for (const sample of manifest.Samples || []) {
@@ -600,7 +604,10 @@ const Native = (() => {
       const item = declaredAudio.get(key) || declaredAudio.get(hash + "/" + (size - 16));
       if (item) audio.set(key, item);
     }
-    return { bytes, name, format: "arprj", manifest, audio, ...payload, objects, patterns: Rytm.describe(objects) };
+    const project = { bytes, name, format: "arprj", manifest, audio, ...payload, objects, patterns: Rytm.describe(objects) };
+    // An initialized slot can have a v9 envelope before the firmware writes its mod storage header.
+    project.emptyModStorage = project.version === 9 && modBytes(project).every(byte => byte === 0);
+    return project;
   }
 
   function modOffset(index) {
@@ -636,7 +643,10 @@ const Native = (() => {
     const sources = new Map();
     const usedProjects = new Set(grid.filter(Boolean).map(ref => ref.project));
     for (const id of usedProjects) sources.set(id, modBytes(projects[id]));
-    if (template.version !== 9 && ![...usedProjects].some(id => projects[id].version === 9)) return;
+    const usesSourceModStorage = [...usedProjects].some(id => projects[id].version === 9 && !projects[id].emptyModStorage);
+    if ((template.version !== 9 || template.emptyModStorage) && !usesSourceModStorage) return;
+    assert(!template.emptyModStorage,
+      "Load and save the blank project on the Rytm, then back it up again so EPC can match its mod layout to your source patterns.");
     assert(lock && template.version === 9 && layoutId(destination) === lock.id,
       "Use a blank .arprj from the same modified firmware and load its elekloader storage lockfile to carry pattern mod settings.");
     const trackSize = 13 * lock.tracks;
@@ -645,7 +655,7 @@ const Native = (() => {
       if (!ref) return;
       const source = sources.get(ref.project);
       const id = layoutId(source);
-      assert(projects[ref.project].version !== 9
+      assert(projects[ref.project].version !== 9 || projects[ref.project].emptyModStorage
         || (id === lock.id && source[7] === destination[7] && source[8] === destination[8]),
         "The source and template use different mod layouts or pattern generations.");
       const fromTracks = MOD_HEADER + (ref.slot + 1) * trackSize;
@@ -932,6 +942,7 @@ function summarize(project) {
   return project ? { name: project.name, format: project.format, patterns: project.patterns,
     firmware: project.manifest?.FirmwareVersion || "", version: project.version || 0,
     modStorage: project.format === "arprj" && project.version === 9,
+    emptyModStorage: project.emptyModStorage === true,
     layout: project.format === "arprj" ? Native.projectLayout(project) : 0 } : null;
 }
 
@@ -1023,13 +1034,19 @@ function readFirmwareProfile(profile) {
 }
 
 function checkTargetFirmware(grid) {
-  const usesModStorage = template.format === "arprj" && (template.version === 9
-    || grid.some(ref => ref && sources[ref.project].format === "arprj" && sources[ref.project].version === 9));
+  const usesSourceModStorage = template.format === "arprj" && grid.some(ref => ref
+    && sources[ref.project].format === "arprj" && sources[ref.project].version === 9 && !sources[ref.project].emptyModStorage);
+  const usesModStorage = template.format === "arprj" && (template.version === 9 || usesSourceModStorage);
   const source = firmwareProfile?.source;
   Archive.assert(source !== "octabam", "Octabam targets Octatrack. The companion cannot export Octatrack projects yet.");
   Archive.assert(source !== "other", "This firmware has no verified project layout. Export is unavailable for this profile.");
   if (usesModStorage) {
-    Archive.assert(source !== "stock", "This arrangement uses tagged Rytm mod storage. Choose the matching modified firmware profile.");
+    Archive.assert(source !== "stock", "This arrangement uses a modified Rytm project format. Choose the matching modified firmware profile.");
+    if (template.emptyModStorage) {
+      Archive.assert(!usesSourceModStorage,
+        "Load and save the blank project on the Rytm, then back it up again so EPC can match its mod layout to your source patterns.");
+      return;
+    }
     Archive.assert(template.version === 9 && lock && lock.id === Native.projectLayout(template),
       "Choose a blank .arprj from the matching modded Rytm and load its storage lockfile before exporting.");
   } else if (source === "modwerk" || source === "elekloader") {
