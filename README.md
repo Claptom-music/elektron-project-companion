@@ -66,3 +66,7 @@ When the maintainer confirms a new feature has been tested on hardware, update t
 The Windows UI uses a local JSON-line service. The format registry in **src/project-core.cjs** selects a parser and writer by file type. Transfer archives share ZIP and LZ4 handling, while the Rytm and Digitakt II adapters own their device-specific layouts. Relevant references include [Elektron Transfer documentation](https://www.elektron.se/wp-content/uploads/2026/03/Transfer-User-Manual_ENG_OS1.10_260304.pdf), [libanalogrytm](https://github.com/bsp2/libanalogrytm), [DNX container research](https://github.com/NoiseAndMatter/DNX), and [Digitakt II project format notes](https://github.com/zhelnov/dt_song_mgmt/blob/main/SPEC.md).
 
 This is a community project and is unaffiliated with Elektron.
+
+## License
+
+EPC is licensed under the [MIT License](LICENSE).
