@@ -1044,7 +1044,18 @@ function parse(bytes, name) {
   return adapters[extension].parse(bytes, name);
 }
 
-async function fromFile(file) {
+function matchesDevice(format, device) {
+  return !device || (format === "dt2prj") === (device === "dt2prj");
+}
+
+function otherTab(device) {
+  return device === "dt2prj" ? "Analog Rytm MKII" : "Digitakt II";
+}
+
+async function fromFile(file, device) {
+  const format = path.extname(file).slice(1).toLowerCase();
+  Archive.assert(!Object.hasOwn(adapters, format) || matchesDevice(format, device),
+    "Open this backup in the " + otherTab(device) + " tab.");
   Archive.assert((await fs.stat(file)).size <= Archive.MAX_FILE, "File exceeds 256 MB.");
   return parse(await fs.readFile(file), path.basename(file));
 }
@@ -1072,13 +1083,13 @@ async function newFile(file, data) {
   await fs.writeFile(file, data instanceof Blob ? Buffer.from(await data.arrayBuffer()) : data, { flag: "wx" });
 }
 
-async function handle(message) {
+async function handle(message, device) {
   switch (message.op) {
     case "import": {
       const errors = [];
       let added = 0, empty = 0;
       for (const file of message.files) {
-        try { sources.push(await fromFile(file)); added++; }
+        try { sources.push(await fromFile(file, device)); added++; }
         catch (error) {
           if (error.code === "EMPTY_PROJECT") empty++;
           else errors.push(path.basename(file) + " — " + error.message);
@@ -1087,7 +1098,7 @@ async function handle(message) {
       return { ...state(), added, empty, errors };
     }
     case "template": {
-      const candidate = await fromFile(message.file);
+      const candidate = await fromFile(message.file, device);
       adapters[candidate.format].assertTemplate(candidate);
       if (template && template.format !== candidate.format) firmwareProfile = null;
       if (candidate.format !== "arprj" || lock?.id !== Native.projectLayout(candidate)) lock = null;
@@ -1128,11 +1139,22 @@ async function handle(message) {
       const candidateLock = data.lock ? Native.parseLock(data.lock) : null;
       const profile = readFirmwareProfile(data.firmwareProfile);
       validateGrid(data.grid, projects);
-      sources = projects;
+      const indices = new Map();
+      const filtered = projects.filter((project, index) => {
+        if (!matchesDevice(project.format, device)) return false;
+        indices.set(index, indices.size);
+        return true;
+      });
+      Archive.assert((!candidate || matchesDevice(candidate.format, device))
+        && (candidate || !projects.length || filtered.length)
+        && data.grid.every(ref => !ref || indices.has(ref.project)),
+      "Open this workspace in the " + otherTab(device) + " tab.");
+      const grid = data.grid.map(ref => ref && { ...ref, project: indices.get(ref.project) });
+      sources = filtered;
       template = candidate;
       lock = candidate?.format === "arprj" && candidateLock?.id === Native.projectLayout(candidate) ? candidateLock : null;
       firmwareProfile = profile;
-      return { ...state(), grid: data.grid };
+      return { ...state(), grid };
     }
     case "export": {
       validateGrid(message.grid, sources);
@@ -1155,10 +1177,11 @@ async function handle(message) {
 }
 
 if (require.main === module) {
+  const device = process.argv[2];
   (async () => {
     for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {
       try {
-        const value = await handle(JSON.parse(line));
+        const value = await handle(JSON.parse(line), device);
         process.stdout.write(JSON.stringify({ ok: true, value }) + "\n");
       } catch (error) {
         process.stdout.write(JSON.stringify({ ok: false, error: error.code === "EEXIST"
