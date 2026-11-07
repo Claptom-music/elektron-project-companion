@@ -294,7 +294,7 @@ sealed class ProjectEditor : UserControl
         projectButton.AccessibleDescription = "Open the project actions menu.";
         AddProjectAction("Import backups…", ImportFiles);
         AddProjectAction("Open backup folder…", ImportFolder);
-        AddProjectAction("Blank template…", PickTemplate);
+        AddProjectAction("Blank template…", () => PickTemplate());
         projectMenu.Items.Add(new ToolStripSeparator());
         AddProjectAction("Open workspace…", OpenWorkspace);
         AddProjectAction("Save workspace…", async () => { await SaveWorkspace(); });
@@ -565,7 +565,7 @@ sealed class ProjectEditor : UserControl
         foreach (var source in sources) projects.Items.Add(Device(Get(source, "format")) + " · " + Get(source, "name"));
         if (sources.Count > 0) projects.SelectedIndex = Math.Min(Math.Max(choice, 0), sources.Count - 1);
         refreshing = false;
-        templateText.Text = template == null ? "Choose a blank project for the device you’re arranging."
+        templateText.Text = template == null ? "No blank template loaded. Choose one from the Project menu or when you export."
             : "TEMPLATE   " + Device(Get(template, "format")) + "  ·  " + Get(template, "name");
         lockButton.Visible = template != null && (bool)template["modStorage"];
         if (template != null && (bool)template["modStorage"])
@@ -831,9 +831,9 @@ sealed class ProjectEditor : UserControl
             }
     }
 
-    string FileToOpen(string filter)
+    string FileToOpen(string filter, string title = "")
     {
-        using (var dialog = new OpenFileDialog { Filter = filter })
+        using (var dialog = new OpenFileDialog { Filter = filter, Title = title })
             return dialog.ShowDialog(host) == DialogResult.OK ? dialog.FileName : null;
     }
 
@@ -843,9 +843,12 @@ sealed class ProjectEditor : UserControl
             return dialog.ShowDialog(host) == DialogResult.OK ? dialog.FileName : null;
     }
 
-    void PickTemplate()
+    async void PickTemplate(Action next = null)
     {
-        string file = FileToOpen(BackupFilter);
+        var first = placements.FirstOrDefault(p => p != null);
+        string extension = first == null ? null : Get(sources[first.project], "format");
+        string filter = extension == null ? BackupFilter : "Blank " + DeviceName + " project|*." + extension;
+        string file = FileToOpen(filter, "Choose a blank " + DeviceName + " template");
         if (file == null) return;
         string format = Path.GetExtension(file).TrimStart('.').ToLowerInvariant();
         if (placements.Any(x => x != null && Get(sources[x.project], "format") != format))
@@ -853,11 +856,12 @@ sealed class ProjectEditor : UserControl
             Tell("The blank template must use the same project format as your arrangement.", true);
             return;
         }
-        Call(Data("op", "template", "file", file), result => {
+        bool loaded = await RunRequest(Data("op", "template", "file", file), result => {
             SetState(result);
             workspaceSettingsChanged = true;
             Tell("Blank template ready.");
         });
+        if (loaded && Visible && next != null) next();
     }
 
     void FindLock(Action next = null)
@@ -1006,7 +1010,17 @@ sealed class ProjectEditor : UserControl
 
     void Export()
     {
-        if (template == null || placements.All(p => p == null)) { Tell("Choose a blank template and place at least one pattern.", true); return; }
+        if (placements.All(p => p == null))
+        {
+            Tell("Drag at least one source pattern into the destination grid before exporting.", true);
+            return;
+        }
+        if (template == null)
+        {
+            Tell("Select a backup of a newly saved, empty project from your " + DeviceName + ".");
+            PickTemplate(Export);
+            return;
+        }
         string format = Get(template, "format");
         bool tagged = (bool)template["modStorage"];
         if (firmwareProfile == null && !tagged) { ConfigureFirmware(Export); return; }
