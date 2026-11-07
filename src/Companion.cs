@@ -29,6 +29,8 @@ sealed class Companion : Form
     readonly ContextMenuStrip projectMenu = new ContextMenuStrip();
     Placement[] placements = new Placement[128];
     Dictionary<string, object> template;
+    Dictionary<string, object> firmwareProfile;
+    bool hasFirmwareLock;
     Placement selectedSource;
     int selectedSlot = -1, dragSlot = -1;
     Point dragStart;
@@ -97,6 +99,7 @@ sealed class Companion : Form
         AddProjectAction("Open workspace…", OpenWorkspace);
         AddProjectAction("Save workspace…", SaveWorkspace);
         exportItem = AddProjectAction("Export project…", Export);
+        AddProjectAction("Firmware compatibility…", () => ConfigureFirmware());
         projectMenu.Items.Add(new ToolStripSeparator());
         AddProjectAction("Open Transfer", OpenTransfer);
         AddProjectAction("Link Elektron Transfer…", () => PickTransfer());
@@ -150,7 +153,7 @@ sealed class Companion : Form
         var sourceActions = new FlowLayoutPanel { Dock = DockStyle.Fill };
         Add(sourceActions, "Add active", AddActive);
         Add(sourceActions, "Save kit folders", Kits);
-        lockButton = Add(sourceActions, "Load Rytm lockfile", PickLock);
+        lockButton = Add(sourceActions, "Load Rytm lockfile", () => PickLock());
         left.Controls.Add(sourceActions, 0, 5);
         layout.Controls.Add(left, 0, 0);
 
@@ -280,7 +283,15 @@ sealed class Companion : Form
         refreshing = false;
         templateText.Text = template == null ? "Choose a blank project for the device you’re arranging."
             : "TEMPLATE   " + Device(Get(template, "format")) + "  ·  " + Get(template, "name");
-        lockButton.Visible = template != null && Get(template, "format") == "arprj" && Int(template, "version") == 9;
+        lockButton.Visible = template != null && (bool)template["modStorage"];
+        if (template != null && (bool)template["modStorage"])
+        {
+            var layout = Convert.ToUInt32(template["layout"]);
+            templateText.Text += layout == 0 ? " · Unidentified Rytm mod layout"
+                : " · Rytm mod layout 0x" + layout.ToString("X8") + (hasFirmwareLock ? " (lockfile matched)" : " (needs lockfile)");
+        }
+        if (firmwareProfile != null)
+            templateText.Text += " · Target: " + FirmwareName(Get(firmwareProfile, "source"));
         RenderLibrary();
         RenderGrid();
     }
@@ -309,6 +320,7 @@ sealed class Companion : Form
                 slot++;
             }
             info.Text = activeCount + " active patterns   ·   " + Get(sources[index], "firmware");
+            if ((bool)sources[index]["modStorage"]) info.Text += "   ·   Mod storage";
         }
         library.EndUpdate();
         refreshing = false;
@@ -475,6 +487,8 @@ sealed class Companion : Form
         sources.Clear();
         sources.AddRange(Items(result["sources"]).Select(Map));
         template = Map(result["template"]);
+        firmwareProfile = Map(result["firmwareProfile"]);
+        hasFirmwareLock = (bool)result["hasLock"];
         selectedSlot = -1;
         selectedSource = null;
         Render();
@@ -530,10 +544,72 @@ sealed class Companion : Form
         Call(Data("op", "template", "file", file), result => { SetState(result); Tell("Blank template ready."); });
     }
 
-    void PickLock()
+    void PickLock(Action next = null)
     {
-        string file = FileToOpen("Elekloader storage lockfile|*.json");
-        if (file != null) Call(Data("op", "lock", "file", file), result => { SetState(result); Tell("Rytm storage lockfile loaded."); });
+        string file = FileToOpen("Rytm storage lockfile or build manifest|*.json");
+        if (file != null) Call(Data("op", "lock", "file", file), result => {
+            SetState(result);
+            Tell("Rytm storage lockfile matched to the blank template.");
+            if (next != null) BeginInvoke(next);
+        });
+    }
+
+    static readonly string[] FirmwareSources = { "stock", "modwerk", "elekloader", "octabam", "other" };
+    static readonly string[] FirmwareNames = { "Stock Elektron", "Modwerk", "Elekloader", "Octabam", "Other or unknown mod" };
+    static string FirmwareName(string source) { return FirmwareNames[Array.IndexOf(FirmwareSources, source)]; }
+
+    void ConfigureFirmware(Action next = null)
+    {
+        bool tagged = template != null && (bool)template["modStorage"];
+        using (var dialog = new Form {
+            Text = "Firmware compatibility", ClientSize = new Size(460, 234), Font = Font,
+            StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
+            MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false
+        })
+        {
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 1, RowCount = 5 };
+            foreach (int height in new[] { 28, 35, 62, 40, 39 })
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            layout.Controls.Add(new Label { Text = "Which firmware runs on the destination machine?", Dock = DockStyle.Fill }, 0, 0);
+            var choice = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Firmware source" };
+            choice.Items.AddRange(FirmwareNames);
+            layout.Controls.Add(choice, 0, 1);
+            var hint = new Label { Dock = DockStyle.Fill };
+            layout.Controls.Add(hint, 0, 2);
+            var standard = new CheckBox { Text = "My build uses the standard Elektron project layout", Dock = DockStyle.Fill,
+                Checked = firmwareProfile != null && (bool)firmwareProfile["standardLayout"] };
+            layout.Controls.Add(standard, 0, 3);
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
+            var ok = new Button { Text = "Use profile", AutoSize = true, DialogResult = DialogResult.OK, Enabled = false };
+            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+            buttons.Controls.Add(ok);
+            buttons.Controls.Add(cancel);
+            layout.Controls.Add(buttons, 0, 4);
+            choice.SelectedIndexChanged += delegate {
+                int index = choice.SelectedIndex;
+                standard.Visible = !tagged && (index == 1 || index == 2);
+                hint.Text = index == 3 ? "Octabam targets Octatrack. The companion cannot export Octatrack projects yet."
+                    : index == 4 ? "Export requires a verified project layout."
+                    : tagged ? "The Rytm template contains mod storage. Export needs the matching build's lockfile."
+                    : index == 0 ? "Export uses the standard project layout."
+                    : "The backup does not identify the mod build. Check the build documentation before confirming its project layout.";
+                ok.Enabled = true;
+            };
+            hint.Text = tagged ? "The Rytm template contains mod storage." : "Backups may omit the firmware mod name.";
+            standard.Visible = false;
+            if (firmwareProfile != null) choice.SelectedIndex = Array.IndexOf(FirmwareSources, Get(firmwareProfile, "source"));
+            dialog.AcceptButton = ok;
+            dialog.CancelButton = cancel;
+            dialog.Controls.Add(layout);
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            int selected = choice.SelectedIndex;
+            Call(Data("op", "firmware", "profile", Data("source", FirmwareSources[selected],
+                "standardLayout", !tagged && (selected == 1 || selected == 2) && standard.Checked)), result => {
+                SetState(result);
+                Tell("Target firmware set to " + FirmwareName(Get(firmwareProfile, "source")) + ".");
+                if (next != null) BeginInvoke(next);
+            });
+        }
     }
 
     void SaveWorkspace()
@@ -558,6 +634,15 @@ sealed class Companion : Form
     {
         if (template == null || placements.All(p => p == null)) { Tell("Choose a blank template and place at least one pattern.", true); return; }
         string format = Get(template, "format");
+        bool tagged = (bool)template["modStorage"];
+        if (firmwareProfile == null && !tagged) { ConfigureFirmware(Export); return; }
+        if (tagged && !hasFirmwareLock && (firmwareProfile == null
+            || new[] { "modwerk", "elekloader" }.Contains(Get(firmwareProfile, "source"))))
+        {
+            Tell("Choose the storage lockfile from the build used for the blank Rytm template.");
+            PickLock(Export);
+            return;
+        }
         string file = FileToSave(format, (format == "dt2prj" ? "Digitakt II" : "Rytm") + " Merged." + format);
         if (file != null) Call(Data("op", "export", "file", file, "grid", placements), result =>
             Tell("Saved " + Path.GetFileName(file) + (result.ContainsKey("bundled") ? " · " + Int(result, "bundled") + " bundled samples" : "")
