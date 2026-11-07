@@ -1,4 +1,6 @@
-# Elektron Project Companion
+# EPC: Electron Project Companion
+
+**Beta 0.1**
 
 A Windows project editor for arranging live sets from local Elektron backups. Browse patterns, place them in banks A–H, and export a new project for Elektron Transfer. The long-term goal is one editor with a separate format adapter for every Elektron machine that can back up editable projects.
 
@@ -16,8 +18,8 @@ Each arrangement uses one device and one file format. The template supplies song
 Build with Node.js 24 and the Windows .NET Framework C# compiler.
 
 1. From the repository root, run **powershell -File build.ps1**.
-2. Open **dist/Elektron Project Companion.exe**. Keep **project-core.cjs** beside it. On first launch, select **Transfer.exe** in the link prompt. You can skip this and link it later from the **Project** menu.
-3. Use the **Project** menu to import source backups and choose a blank project exported by Transfer from the same device.
+2. Open **dist/EPC - Electron Project Companion.exe**. Keep **project-core.cjs** beside it. On first launch, select **Transfer.exe** in the link prompt. You can skip this and link it later from the **Project** menu.
+3. Choose the **Analog Rytm MKII** or **Digitakt II** tab. Use its **Project** menu to import backups and choose a blank project exported by Transfer from that device. Each tab keeps its own arrangement and workspace.
 4. Drag a source pattern to a free destination. Drag or select placed patterns to move or swap them.
 5. Save a workspace or export a project from the **Project** menu. Choose **Project → Open Transfer** and import the export into a free project slot. Check playback, kits and samples on the machine before relying on the set.
 
@@ -35,7 +37,7 @@ To run the Digitakt II archive test with your own disposable fixture, build and 
 
 ## Help build this
 
-I’m building Elektron Project Companion to make it easier to pull together a live set from the projects you already have. The aim is to move patterns and their sounds between backups, arrange them on one bank grid, and load the result with Elektron Transfer.
+I’m building EPC to make it easier to pull together a live set from the projects you already have. The aim is to move patterns and their sounds between backups, arrange them on one bank grid, and load the result with Elektron Transfer.
 
 **Have an Elektron machine? [Open an issue](https://github.com/Claptom-music/elektron-project-companion/issues/new) with your model, firmware version, and what you’d like to test or build.** Useful contributions include:
 
