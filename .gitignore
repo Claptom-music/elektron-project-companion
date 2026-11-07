@@ -1,0 +1,10 @@
+/dist/
+/fixtures/
+*.arprj
+*.dt2prj
+*.syx
+*.wav
+*.aif
+*.aiff
+*.elemod
+*.rytm-workspace.json
