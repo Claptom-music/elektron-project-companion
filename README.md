@@ -2,6 +2,8 @@
 
 **Beta 0.1**
 
+[Download EPC Beta 0.1 for Windows x64](https://github.com/Claptom-music/elektron-project-companion/raw/refs/heads/main/downloads/EPC-Beta-0.1-Windows-x64.zip). Extract the ZIP and open **EPC - Electron Project Companion.exe**. Keep **project-core.cjs** beside it. EPC requires Node.js 24.
+
 A Windows project editor for arranging live sets from local Elektron backups. Browse patterns, place them in banks A–H, and export a new project for Elektron Transfer. The long-term goal is one editor with a separate format adapter for every Elektron machine that can back up editable projects.
 
 ## What works today
