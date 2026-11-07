@@ -939,6 +939,82 @@ function state() {
   return { sources: sources.map(summarize), template: summarize(template), hasLock: !!lock, firmwareProfile };
 }
 
+function lockTarget() {
+  const id = template?.format === "arprj" ? Native.projectLayout(template) : 0;
+  Archive.assert(id, "Choose a blank Rytm .arprj with a detected mod layout first.");
+  return id;
+}
+
+function useLock(data, id) {
+  let value;
+  try { value = JSON.parse(Archive.decoder.decode(data)); }
+  catch { throw new Error("The lockfile or build manifest is not valid UTF-8 JSON."); }
+  const candidate = Native.parseLock(value);
+  Archive.assert(candidate.id === id, "This lockfile's layout ID does not match the blank Rytm template.");
+  lock = candidate;
+  return state();
+}
+
+function lockUrl(value) {
+  let url;
+  try { url = new URL(value); }
+  catch { throw new Error("Enter a public HTTPS link to a lockfile or build manifest JSON."); }
+  const hosts = ["github.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com", "modwerk.app", "elekloader.github.io"];
+  Archive.assert(url.protocol === "https:" && !url.port && !url.username && !url.password && hosts.includes(url.hostname),
+    "Use a public HTTPS JSON link from GitHub, Modwerk, or Elekloader.");
+  if (url.hostname === "github.com") {
+    const blob = /^\/([^/]+\/[^/]+)\/blob\/(.+\.json)$/i.exec(url.pathname);
+    if (blob) return new URL("https://raw.githubusercontent.com/" + blob[1] + "/" + blob[2]);
+    Archive.assert(/^\/[^/]+\/[^/]+\/releases\/(?:latest\/)?download\/.+\.json$/i.test(url.pathname),
+      "Choose a GitHub JSON file or a JSON release asset link.");
+  }
+  return url;
+}
+
+async function downloadLock(value, id) {
+  const registry = !value;
+  const label = id.toString(16).padStart(8, "0");
+  let url = lockUrl(value || "https://raw.githubusercontent.com/Claptom-music/elektron-project-companion/main/firmware/analog-rytm-mk2/" + label + ".json");
+  const signal = AbortSignal.timeout(8000);
+  const limit = 256 * 1024;
+  for (let hop = 0; hop < 4; hop++) {
+    let response;
+    try { response = await fetch(url, { redirect: "manual", signal }); }
+    catch { throw new Error("Couldn't reach the lockfile source. Retry or load a local JSON file."); }
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const next = response.headers.get("location");
+      await response.body?.cancel();
+      Archive.assert(next, "The lockfile source returned an invalid redirect.");
+      url = lockUrl(new URL(next, url));
+      continue;
+    }
+    if (!response.ok || !response.body) {
+      await response.body?.cancel();
+      throw new Error(registry && response.status === 404
+        ? "No registry entry for layout 0x" + label.toUpperCase() + ". Use a public JSON link or a local file from your build."
+        : "Couldn't download the lockfile (HTTP " + response.status + ").");
+    }
+    const reader = response.body.getReader();
+    const data = new Uint8Array(limit);
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value: bytes } = await reader.read();
+        if (done) return data.subarray(0, size);
+        Archive.assert(size + bytes.length <= limit, "The online lockfile exceeds 256 KB.");
+        data.set(bytes, size);
+        size += bytes.length;
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      if (signal.aborted) throw new Error("The lockfile download timed out. Retry or load a local JSON file.");
+      throw error;
+    }
+  }
+  throw new Error("The lockfile link redirects too many times.");
+}
+
 function readFirmwareProfile(profile) {
   if (profile == null) return null;
   Archive.assert(["stock", "modwerk", "elekloader", "octabam", "other"].includes(profile.source)
@@ -1019,11 +1095,13 @@ async function handle(message) {
       return state();
     }
     case "lock": {
-      const candidate = Native.parseLock(JSON.parse((await fs.readFile(message.file, "utf8")).replace(/^\uFEFF/, "")));
-      Archive.assert(template?.format === "arprj" && candidate.id === Native.projectLayout(template),
-        "This lockfile's layout ID does not match the blank Rytm template.");
-      lock = candidate;
-      return state();
+      const id = lockTarget();
+      return useLock(await fs.readFile(message.file), id);
+    }
+    case "lock-online": {
+      const id = lockTarget();
+      Archive.assert(typeof message.url === "string" && message.url.length <= 4096, "Invalid online lockfile link.");
+      return useLock(await downloadLock(message.url.trim(), id), id);
     }
     case "firmware": {
       firmwareProfile = readFirmwareProfile(message.profile);
