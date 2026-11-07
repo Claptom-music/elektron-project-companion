@@ -568,11 +568,12 @@ sealed class ProjectEditor : UserControl
         refreshing = false;
         templateText.Text = template == null ? "No blank template loaded. Choose one from the Project menu or when you export."
             : "TEMPLATE   " + Device(Get(template, "format")) + "  ·  " + Get(template, "name");
-        lockButton.Visible = template != null && (bool)template["modStorage"];
+        lockButton.Visible = template != null && (bool)template["modStorage"] && Convert.ToUInt32(template["layout"]) != 0;
         if (template != null && (bool)template["modStorage"])
         {
             var layout = Convert.ToUInt32(template["layout"]);
-            templateText.Text += layout == 0 ? " · Unidentified Rytm mod layout"
+            templateText.Text += (bool)template["emptyModStorage"] ? " · Rytm mod storage is empty"
+                : layout == 0 ? " · Unidentified Rytm mod layout"
                 : " · Rytm mod layout 0x" + layout.ToString("X8") + (hasFirmwareLock ? " (lockfile matched)" : " (needs lockfile)");
         }
         if (firmwareProfile != null)
@@ -1039,8 +1040,17 @@ sealed class ProjectEditor : UserControl
         }
         string format = Get(template, "format");
         bool tagged = (bool)template["modStorage"];
-        if (firmwareProfile == null && !tagged && !await ConfigureFirmware()) return;
-        if (tagged && !hasFirmwareLock && (firmwareProfile == null
+        bool emptyModStorage = (bool)template["emptyModStorage"];
+        bool needsFirmwareProfile = firmwareProfile == null ? !tagged : tagged && Get(firmwareProfile, "source") == "stock";
+        if (needsFirmwareProfile && !await ConfigureFirmware()) return;
+        if (emptyModStorage && placements.Any(p => p != null && (bool)sources[p.project]["modStorage"]
+            && !(bool)sources[p.project]["emptyModStorage"]))
+        {
+            ReportFailure("Load and save the blank project on the Rytm, then back it up again so EPC can match its mod layout to your source patterns.",
+                "Rytm template needs a saved mod layout");
+            return;
+        }
+        if (tagged && !emptyModStorage && !hasFirmwareLock && (firmwareProfile == null
             || new[] { "modwerk", "elekloader" }.Contains(Get(firmwareProfile, "source"))))
         {
             Tell("Choose the storage lockfile from the build used for the blank Rytm template.");
