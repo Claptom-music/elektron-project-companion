@@ -100,6 +100,7 @@ sealed class Companion : Form
         AddProjectAction("Save workspace…", SaveWorkspace);
         exportItem = AddProjectAction("Export project…", Export);
         AddProjectAction("Firmware compatibility…", () => ConfigureFirmware());
+        AddProjectAction("Find Rytm lockfile…", () => FindLock());
         projectMenu.Items.Add(new ToolStripSeparator());
         AddProjectAction("Open Transfer", OpenTransfer);
         AddProjectAction("Link Elektron Transfer…", () => PickTransfer());
@@ -153,7 +154,7 @@ sealed class Companion : Form
         var sourceActions = new FlowLayoutPanel { Dock = DockStyle.Fill };
         Add(sourceActions, "Add active", AddActive);
         Add(sourceActions, "Save kit folders", Kits);
-        lockButton = Add(sourceActions, "Load Rytm lockfile", () => PickLock());
+        lockButton = Add(sourceActions, "Find Rytm lockfile", () => FindLock());
         left.Controls.Add(sourceActions, 0, 5);
         layout.Controls.Add(left, 0, 0);
 
@@ -544,10 +545,49 @@ sealed class Companion : Form
         Call(Data("op", "template", "file", file), result => { SetState(result); Tell("Blank template ready."); });
     }
 
-    void PickLock(Action next = null)
+    void FindLock(Action next = null)
     {
-        string file = FileToOpen("Rytm storage lockfile or build manifest|*.json");
-        if (file != null) Call(Data("op", "lock", "file", file), result => {
+        uint id = template == null ? 0 : Convert.ToUInt32(template["layout"]);
+        if (id == 0) { Tell("Choose a blank Rytm .arprj with a detected mod layout first.", true); return; }
+        Dictionary<string, object> request;
+        using (var dialog = new Form {
+            Text = "Find Rytm lockfile", ClientSize = new Size(560, 208), Font = Font,
+            StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
+            MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false
+        })
+        {
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 1, RowCount = 5 };
+            foreach (int height in new[] { 26, 47, 24, 36, 44 })
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Detected Rytm layout 0x" + id.ToString("X8") }, 0, 0);
+            layout.Controls.Add(new Label { Dock = DockStyle.Fill,
+                Text = "Leave the link blank to check the companion registry on GitHub. You can also open a lockfile or build manifest from your computer." }, 0, 1);
+            layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Public JSON link (optional)" }, 0, 2);
+            var url = new TextBox { Dock = DockStyle.Fill, MaxLength = 4096, AccessibleName = "Public JSON link" };
+            layout.Controls.Add(url, 0, 3);
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
+            var online = new Button { Text = "Check registry", AutoSize = true, DialogResult = DialogResult.OK };
+            var local = new Button { Text = "Open local file…", AutoSize = true, DialogResult = DialogResult.Retry };
+            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(online);
+            buttons.Controls.Add(local);
+            layout.Controls.Add(buttons, 0, 4);
+            url.TextChanged += delegate { online.Text = String.IsNullOrWhiteSpace(url.Text) ? "Check registry" : "Load from link"; };
+            dialog.AcceptButton = online;
+            dialog.CancelButton = cancel;
+            dialog.Controls.Add(layout);
+            var choice = dialog.ShowDialog(this);
+            if (choice == DialogResult.OK) request = Data("op", "lock-online", "url", url.Text);
+            else if (choice == DialogResult.Retry)
+            {
+                string file = FileToOpen("Rytm storage lockfile or build manifest|*.json");
+                if (file == null) return;
+                request = Data("op", "lock", "file", file);
+            }
+            else return;
+        }
+        Call(request, result => {
             SetState(result);
             Tell("Rytm storage lockfile matched to the blank template.");
             if (next != null) BeginInvoke(next);
@@ -640,7 +680,7 @@ sealed class Companion : Form
             || new[] { "modwerk", "elekloader" }.Contains(Get(firmwareProfile, "source"))))
         {
             Tell("Choose the storage lockfile from the build used for the blank Rytm template.");
-            PickLock(Export);
+            FindLock(Export);
             return;
         }
         string file = FileToSave(format, (format == "dt2prj" ? "Digitakt II" : "Rytm") + " Merged." + format);
