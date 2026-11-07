@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -25,6 +26,7 @@ sealed class Companion : Form
     readonly ProjectEditor[] editors;
     ProjectEditor ActiveEditor { get { return editors[tabs.SelectedIndex]; } }
     string transferPath;
+    bool confirmingClose, closeApproved;
     static readonly string TransferLinkFile = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Elektron Project Companion", "transfer-path.txt");
@@ -79,7 +81,7 @@ sealed class Companion : Form
         shell.Controls.Add(footer, 0, 2);
         Controls.Add(shell);
         tabs.SelectedIndexChanged += delegate { RefreshStatus(); };
-        KeyDown += delegate(object sender, KeyEventArgs args) { ActiveEditor.HandleShortcut(args); };
+        KeyDown += delegate(object sender, KeyEventArgs args) { if (!confirmingClose) ActiveEditor.HandleShortcut(args); };
         Shown += delegate {
             transferPath = LoadTransferPath(TransferLinkFile);
             if (!IsTransferPath(transferPath)) PickTransfer();
@@ -92,6 +94,46 @@ sealed class Companion : Form
         if (tabs.SelectedIndex < 0) return;
         status.Text = ActiveEditor.StatusText;
         status.ForeColor = ActiveEditor.StatusColor;
+    }
+
+    protected override async void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        if (e.Cancel || closeApproved) return;
+        if (confirmingClose) { e.Cancel = true; return; }
+        var working = Array.FindIndex(editors, editor => editor.IsWorking);
+        if (working >= 0)
+        {
+            e.Cancel = true;
+            tabs.SelectedIndex = working;
+            Tell("Wait for the current operation to finish before closing.", true);
+            return;
+        }
+        if (!editors.Any(editor => editor.HasUnsavedChanges)) return;
+
+        e.Cancel = true;
+        confirmingClose = true;
+        tabs.Enabled = false;
+        try
+        {
+            for (int i = 0; i < editors.Length; i++)
+            {
+                var editor = editors[i];
+                if (!editor.HasUnsavedChanges) continue;
+                tabs.SelectedIndex = i;
+                var choice = MessageBox.Show(this, "Save changes to the " + editor.DeviceName
+                    + " workspace before closing?\n\nChoose No to discard its unsaved changes.",
+                    ProjectName, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                if (choice == DialogResult.Cancel || (choice == DialogResult.Yes && !await editor.SaveWorkspace())) return;
+            }
+            closeApproved = true;
+            BeginInvoke((Action)Close);
+        }
+        finally
+        {
+            confirmingClose = false;
+            tabs.Enabled = true;
+        }
     }
 
     void Tell(string text, bool error = false) { ActiveEditor.Tell(text, error); }
@@ -187,9 +229,16 @@ sealed class ProjectEditor : UserControl
     internal string DeviceName { get { return digitakt ? "Digitakt II" : "Analog Rytm MKII"; } }
     internal string StatusText { get; private set; }
     internal Color StatusColor { get; private set; }
+    internal bool IsWorking { get { return busy; } }
+    internal bool HasUnsavedChanges
+    {
+        get { return workspaceSettingsChanged || placements.Where((p, i) => !SamePlacement(p, savedPlacements[i])).Any(); }
+    }
     readonly Color surface = Color.FromArgb(29, 32, 28);
     readonly Color muted = Companion.Muted;
     readonly Color accent = Color.FromArgb(204, 244, 129);
+    readonly Font keyLabelFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+    readonly Font keyNameFont = new Font("Segoe UI", 8f);
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
     readonly ComboBox projects = new ComboBox();
     readonly ListView library = new ListView();
@@ -202,6 +251,8 @@ sealed class ProjectEditor : UserControl
     readonly List<Button> actions = new List<Button>();
     readonly ContextMenuStrip projectMenu = new ContextMenuStrip();
     Placement[] placements = new Placement[128];
+    Placement[] savedPlacements = new Placement[128];
+    bool workspaceSettingsChanged;
     Dictionary<string, object> template;
     Dictionary<string, object> firmwareProfile;
     bool hasFirmwareLock;
@@ -218,6 +269,11 @@ sealed class ProjectEditor : UserControl
     {
         public int project { get; set; }
         public int slot { get; set; }
+    }
+
+    static bool SamePlacement(Placement a, Placement b)
+    {
+        return a == b || (a != null && b != null && a.project == b.project && a.slot == b.slot);
     }
 
     internal ProjectEditor(Companion host, bool digitakt)
@@ -241,7 +297,7 @@ sealed class ProjectEditor : UserControl
         AddProjectAction("Blank template…", PickTemplate);
         projectMenu.Items.Add(new ToolStripSeparator());
         AddProjectAction("Open workspace…", OpenWorkspace);
-        AddProjectAction("Save workspace…", SaveWorkspace);
+        AddProjectAction("Save workspace…", async () => { await SaveWorkspace(); });
         exportItem = AddProjectAction("Export project…", Export);
         AddProjectAction("Firmware compatibility…", () => ConfigureFirmware());
         if (!digitakt) AddProjectAction("Find Rytm lockfile…", () => FindLock());
@@ -287,7 +343,7 @@ sealed class ProjectEditor : UserControl
             if (refreshing || library.SelectedItems.Count == 0) return;
             selectedSource = (Placement)library.SelectedItems[0].Tag;
             selectedSlot = -1;
-            Tell("Selected " + LabelFor(selectedSource.slot) + ". Click an empty destination.");
+            Tell("Selected " + LabelFor(selectedSource.slot) + ". Click an empty slot or drag to replace an occupied one.");
         };
         library.ItemDrag += delegate(object s, ItemDragEventArgs e) {
             if (busy) return;
@@ -314,6 +370,7 @@ sealed class ProjectEditor : UserControl
         grid.Dock = DockStyle.Fill;
         grid.BackgroundColor = surface;
         grid.BorderStyle = BorderStyle.None;
+        grid.CellBorderStyle = DataGridViewCellBorderStyle.None;
         grid.ReadOnly = true;
         grid.MultiSelect = false;
         grid.RowHeadersWidth = 42;
@@ -334,6 +391,7 @@ sealed class ProjectEditor : UserControl
         FitColumns();
         grid.Rows.Add(8);
         for (int i = 0; i < 8; i++) grid.Rows[i].HeaderCell.Value = ((char)('A' + i)).ToString();
+        grid.CellPainting += PaintPatternKey;
         grid.CellClick += delegate(object s, DataGridViewCellEventArgs e) {
             if (e.RowIndex >= 0 && e.ColumnIndex >= 0) ChooseCell(e.RowIndex * 16 + e.ColumnIndex);
         };
@@ -347,8 +405,14 @@ sealed class ProjectEditor : UserControl
             var cell = grid.HitTest(point.X, point.Y);
             if (cell.RowIndex < 0 || cell.ColumnIndex < 0) return;
             string data = e.Data.GetData(DataFormats.Text) as string;
-            if (data == "elektron-grid" && dragSlot >= 0) { selectedSource = null; selectedSlot = dragSlot; }
-            if (data == "elektron-source" || data == "elektron-grid") ChooseCell(cell.RowIndex * 16 + cell.ColumnIndex);
+            int slot = cell.RowIndex * 16 + cell.ColumnIndex;
+            if (data == "elektron-source" && selectedSource != null) ChooseCell(slot, true);
+            else if (data == "elektron-grid" && dragSlot >= 0)
+            {
+                selectedSource = null;
+                selectedSlot = dragSlot;
+                ChooseCell(slot);
+            }
         };
         grid.MouseDown += delegate(object s, MouseEventArgs e) {
             var cell = grid.HitTest(e.X, e.Y);
@@ -385,6 +449,71 @@ sealed class ProjectEditor : UserControl
         int remainder = available % grid.Columns.Count;
         foreach (DataGridViewColumn column in grid.Columns)
             column.Width = Math.Max(column.MinimumWidth, width + (column.Index < remainder ? 1 : 0));
+    }
+
+    static GraphicsPath KeyOutline(Rectangle bounds)
+    {
+        const int corner = 8;
+        var path = new GraphicsPath();
+        path.AddArc(bounds.X, bounds.Y, corner, corner, 180, 90);
+        path.AddArc(bounds.Right - corner, bounds.Y, corner, corner, 270, 90);
+        path.AddArc(bounds.Right - corner, bounds.Bottom - corner, corner, corner, 0, 90);
+        path.AddArc(bounds.X, bounds.Bottom - corner, corner, corner, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    void PaintPatternKey(object sender, DataGridViewCellPaintingEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex < 0 || SystemInformation.HighContrast) return;
+        int slot = e.RowIndex * 16 + e.ColumnIndex;
+        bool occupied = placements[slot] != null;
+        bool selected = slot == selectedSlot;
+        bool focused = grid.Focused && (e.State & DataGridViewElementStates.Selected) != 0;
+        var face = Rectangle.Inflate(e.CellBounds, -2, -3);
+        face.Width -= 1;
+        face.Height -= 3;
+        var shadow = face;
+        shadow.Offset(0, 3);
+        Color top = selected ? Color.FromArgb(70, 85, 47)
+            : occupied ? Color.FromArgb(76, 59, 53) : Color.FromArgb(61, 62, 59);
+        Color bottom = selected ? Color.FromArgb(43, 54, 30)
+            : occupied ? Color.FromArgb(48, 37, 34) : Color.FromArgb(35, 36, 34);
+        Color edge = selected ? accent : focused ? Color.Silver : Color.FromArgb(105, 105, 99);
+        Color lamp = occupied ? (digitakt ? Color.FromArgb(255, 172, 70) : Color.FromArgb(255, 113, 94))
+            : Color.FromArgb(45, 46, 43);
+
+        var graphics = e.Graphics;
+        var state = graphics.Save();
+        try
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var panel = new SolidBrush(grid.BackgroundColor)) graphics.FillRectangle(panel, e.CellBounds);
+            using (var path = KeyOutline(shadow)) graphics.FillPath(Brushes.Black, path);
+            using (var path = KeyOutline(face))
+            using (var paint = new LinearGradientBrush(face, top, bottom, LinearGradientMode.Vertical))
+            using (var rim = new Pen(edge))
+            {
+                graphics.FillPath(paint, path);
+                graphics.DrawPath(rim, path);
+            }
+            using (var light = new SolidBrush(lamp)) graphics.FillRectangle(light, face.X + (face.Width - 10) / 2, face.Y + 5, 10, 2);
+        }
+        finally { graphics.Restore(state); }
+
+        const TextFormatFlags flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+            | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
+            | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping;
+        var text = new Rectangle(face.X + 1, face.Y + 9, face.Width - 2, occupied ? 16 : face.Height - 12);
+        TextRenderer.DrawText(graphics, LabelFor(slot), keyLabelFont, text, Color.WhiteSmoke, flags);
+        string display = Convert.ToString(e.FormattedValue);
+        int lineBreak = display.IndexOf('\n');
+        if (occupied && lineBreak >= 0)
+        {
+            text.Y += 15;
+            TextRenderer.DrawText(graphics, display.Substring(lineBreak + 1), keyNameFont, text, Color.Gainsboro, flags);
+        }
+        e.Handled = true;
     }
 
     Button Add(FlowLayoutPanel bar, string caption, Action action)
@@ -497,23 +626,32 @@ sealed class ProjectEditor : UserControl
         exportItem.Text = template == null ? "Export project…" : "Export ." + Get(template, "format") + "…";
     }
 
-    bool Fits(Placement p)
+    bool Fits(Placement p, int replacedSlot = -1)
     {
         string format = Get(sources[p.project], "format");
         if (template != null && format != Get(template, "format")) return false;
-        return placements.Where(x => x != null).All(x => Get(sources[x.project], "format") == format);
+        return placements.Where((x, i) => x != null && i != replacedSlot).All(x => Get(sources[x.project], "format") == format);
     }
 
-    void ChooseCell(int slot)
+    void ChooseCell(int slot, bool replace = false)
     {
         if (busy) return;
+        bool replaced = false;
         if (selectedSource != null)
         {
-            if (placements[slot] != null) { Tell("Choose an empty destination.", true); return; }
-            if (!Fits(selectedSource)) { Tell("Use the same project format for the arrangement and template.", true); return; }
+            var previous = placements[slot];
+            if (previous != null && !replace) { Tell("Drag the source pattern onto the occupied slot to replace it.", true); return; }
+            if (!Fits(selectedSource, slot)) { Tell("Use the same project format for the arrangement and template.", true); return; }
+            if (SamePlacement(previous, selectedSource))
+            {
+                selectedSource = null;
+                Tell(LabelFor(slot) + " already has that pattern.");
+                return;
+            }
             Remember();
             placements[slot] = selectedSource;
             selectedSource = null;
+            replaced = previous != null;
         }
         else if (selectedSlot >= 0 && selectedSlot != slot)
         {
@@ -531,7 +669,8 @@ sealed class ProjectEditor : UserControl
             return;
         }
         RenderGrid();
-        Tell(placements.Count(x => x != null) + " / 128 slots placed.");
+        Tell(replaced ? "Replaced " + LabelFor(slot) + ". Use Undo to restore the previous pattern."
+            : placements.Count(x => x != null) + " / 128 slots placed.");
     }
 
     void AddActive()
@@ -627,6 +766,11 @@ sealed class ProjectEditor : UserControl
 
     async void Call(Dictionary<string, object> message, Action<Dictionary<string, object>> done)
     {
+        await RunRequest(message, done);
+    }
+
+    async Task<bool> RunRequest(Dictionary<string, object> message, Action<Dictionary<string, object>> done)
+    {
         busy = true;
         foreach (var button in actions) button.Enabled = false;
         Tell("Working…");
@@ -634,9 +778,11 @@ sealed class ProjectEditor : UserControl
         {
             if (service == null) StartService();
             var result = await Task.Run(() => Request(message));
-            if (!IsDisposed) done(result);
+            if (IsDisposed) return false;
+            done(result);
+            return true;
         }
-        catch (Exception error) { if (!IsDisposed) Tell(error.Message, true); }
+        catch (Exception error) { if (!IsDisposed) Tell(error.Message, true); return false; }
         finally
         {
             busy = false;
@@ -661,6 +807,7 @@ sealed class ProjectEditor : UserControl
         if (paths.Length == 0) { Tell("No project backups found in that folder.", true); return; }
         Call(Data("op", "import", "files", paths), result => {
             SetState(result);
+            if (Int(result, "added") > 0) workspaceSettingsChanged = true;
             var errors = Items(result["errors"]).Cast<string>().ToList();
             Tell("Imported " + Int(result, "added") + ". Skipped " + Int(result, "empty") + " unused slots."
                 + (errors.Count > 0 ? "  " + errors.Count + " unreadable. " + errors[0] : ""), errors.Count > 0);
@@ -706,7 +853,11 @@ sealed class ProjectEditor : UserControl
             Tell("The blank template must use the same project format as your arrangement.", true);
             return;
         }
-        Call(Data("op", "template", "file", file), result => { SetState(result); Tell("Blank template ready."); });
+        Call(Data("op", "template", "file", file), result => {
+            SetState(result);
+            workspaceSettingsChanged = true;
+            Tell("Blank template ready.");
+        });
     }
 
     void FindLock(Action next = null)
@@ -753,6 +904,7 @@ sealed class ProjectEditor : UserControl
         }
         Call(request, result => {
             SetState(result);
+            workspaceSettingsChanged = true;
             Tell("Rytm storage lockfile matched to the blank template.");
             if (next != null && Visible) BeginInvoke(next);
         });
@@ -809,17 +961,34 @@ sealed class ProjectEditor : UserControl
             int selected = choice.SelectedIndex;
             Call(Data("op", "firmware", "profile", Data("source", FirmwareSources[selected],
                 "standardLayout", !tagged && (selected == 1 || selected == 2) && standard.Checked)), result => {
+                var previous = firmwareProfile;
                 SetState(result);
+                if (previous == null || Get(previous, "source") != Get(firmwareProfile, "source")
+                    || (bool)previous["standardLayout"] != (bool)firmwareProfile["standardLayout"]) workspaceSettingsChanged = true;
                 Tell("Target firmware set to " + FirmwareName(Get(firmwareProfile, "source")) + ".");
                 if (next != null && Visible) BeginInvoke(next);
             });
         }
     }
 
-    void SaveWorkspace()
+    void MarkWorkspaceSaved()
+    {
+        savedPlacements = (Placement[])placements.Clone();
+        workspaceSettingsChanged = false;
+    }
+
+    internal async Task<bool> SaveWorkspace()
     {
         string file = FileToSave("json", DeviceName + " set.json");
-        if (file != null) Call(Data("op", "save", "file", file, "grid", placements), result => Tell("Saved workspace to " + file));
+        return file != null && await WriteWorkspace(file);
+    }
+
+    Task<bool> WriteWorkspace(string file)
+    {
+        return RunRequest(Data("op", "save", "file", file, "grid", placements), result => {
+            MarkWorkspaceSaved();
+            Tell("Saved workspace to " + file);
+        });
     }
 
     void OpenWorkspace()
@@ -830,6 +999,7 @@ sealed class ProjectEditor : UserControl
                 new Placement { project = Int(Map(x), "project"), slot = Int(Map(x), "slot") }).ToArray();
             undo.Clear();
             SetState(result);
+            MarkWorkspaceSaved();
             Tell("Opened " + Path.GetFileName(file));
         });
     }
@@ -865,7 +1035,12 @@ sealed class ProjectEditor : UserControl
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) projectMenu.Dispose();
+        if (disposing)
+        {
+            projectMenu.Dispose();
+            keyLabelFont.Dispose();
+            keyNameFont.Dispose();
+        }
         if (disposing && service != null)
         {
             try { if (!service.HasExited) service.Kill(); } catch (InvalidOperationException) { }
