@@ -26,15 +26,21 @@ sealed class Companion : Form
     readonly List<Dictionary<string, object>> sources = new List<Dictionary<string, object>>();
     readonly Stack<Placement[]> undo = new Stack<Placement[]>();
     readonly List<Button> actions = new List<Button>();
+    readonly ContextMenuStrip projectMenu = new ContextMenuStrip();
     Placement[] placements = new Placement[128];
     Dictionary<string, object> template;
     Placement selectedSource;
     int selectedSlot = -1, dragSlot = -1;
     Point dragStart;
     Process service;
-    Button lockButton, exportButton;
+    Button lockButton;
+    ToolStripMenuItem exportItem;
+    string transferPath;
     bool busy, refreshing;
     static readonly string Root = AppDomain.CurrentDomain.BaseDirectory;
+    static readonly string TransferLinkFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Elektron Project Companion", "transfer-path.txt");
 
     sealed class Placement
     {
@@ -81,15 +87,19 @@ sealed class Companion : Form
             ForeColor = accent, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
         shell.Controls.Add(title, 0, 0);
         var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
-        Add(bar, "Import backups", ImportFiles);
-        Add(bar, "Open backup folder", ImportFolder);
-        Add(bar, "Blank template", PickTemplate);
-        Add(bar, "Open workspace", OpenWorkspace);
-        Add(bar, "Save workspace", SaveWorkspace);
-        exportButton = Add(bar, "Export project", Export);
-        exportButton.BackColor = accent;
-        exportButton.ForeColor = Color.FromArgb(20, 30, 10);
-        Add(bar, "Open Transfer", OpenTransfer);
+        var projectButton = Add(bar, "&Project ▾", () => projectMenu.Show(
+            bar.Controls[0], new Point(0, bar.Controls[0].Height)));
+        projectButton.AccessibleDescription = "Open the project actions menu.";
+        AddProjectAction("Import backups…", ImportFiles);
+        AddProjectAction("Open backup folder…", ImportFolder);
+        AddProjectAction("Blank template…", PickTemplate);
+        projectMenu.Items.Add(new ToolStripSeparator());
+        AddProjectAction("Open workspace…", OpenWorkspace);
+        AddProjectAction("Save workspace…", SaveWorkspace);
+        exportItem = AddProjectAction("Export project…", Export);
+        projectMenu.Items.Add(new ToolStripSeparator());
+        AddProjectAction("Open Transfer", OpenTransfer);
+        AddProjectAction("Link Elektron Transfer…", () => PickTransfer());
         shell.Controls.Add(bar, 0, 1);
         templateText.Dock = DockStyle.Fill;
         templateText.TextAlign = ContentAlignment.MiddleLeft;
@@ -217,6 +227,8 @@ sealed class Companion : Form
         Shown += delegate {
             try { StartService(); }
             catch (Exception error) { Tell(error.Message, true); }
+            transferPath = LoadTransferPath(TransferLinkFile);
+            if (!IsTransferPath(transferPath)) PickTransfer();
         };
         Render();
         Tell("Import .arprj or .dt2prj backups. Select or drag patterns into the destination grid.");
@@ -231,6 +243,14 @@ sealed class Companion : Form
         bar.Controls.Add(button);
         actions.Add(button);
         return button;
+    }
+
+    ToolStripMenuItem AddProjectAction(string caption, Action action)
+    {
+        var item = new ToolStripMenuItem(caption);
+        item.Click += delegate { if (!busy) action(); };
+        projectMenu.Items.Add(item);
+        return item;
     }
 
     static string LabelFor(int slot) { return ((char)('A' + slot / 16)).ToString() + (slot % 16 + 1).ToString("00"); }
@@ -307,7 +327,7 @@ sealed class Companion : Form
                 p == null ? Color.FromArgb(23, 25, 22) : Color.FromArgb(44, 59, 33);
             cell.Style.ForeColor = p == null ? muted : accent;
         }
-        exportButton.Text = template == null ? "Export project" : "Export ." + Get(template, "format");
+        exportItem.Text = template == null ? "Export project…" : "Export ." + Get(template, "format") + "…";
     }
 
     bool Fits(Placement p)
@@ -542,7 +562,7 @@ sealed class Companion : Form
         if (file != null) Call(Data("op", "export", "file", file, "grid", placements), result =>
             Tell("Saved " + Path.GetFileName(file) + (result.ContainsKey("bundled") ? " · " + Int(result, "bundled") + " bundled samples" : "")
             + (result.ContainsKey("missing") && Int(result, "missing") > 0 ? " · " + Int(result, "missing") + " sample identities need audio on the +Drive" : "")
-            + ". Open Transfer to restore."));
+            + ". Use Project → Open Transfer to restore."));
     }
 
     void Kits()
@@ -554,19 +574,91 @@ sealed class Companion : Form
             Tell("Saved " + Int(result, "count") + " kit records. Extract the ZIP to browse the project folders."));
     }
 
+    static bool IsTransferPath(string file)
+    {
+        return !String.IsNullOrEmpty(file) && File.Exists(file)
+            && String.Equals(Path.GetFileName(file), "Transfer.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static string LoadTransferPath(string linkFile)
+    {
+        try { return File.ReadAllText(linkFile).Trim(); }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    static string InstalledTransferPath()
+    {
+        foreach (var folder in new[] { Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.ProgramFiles })
+        {
+            string root = Environment.GetFolderPath(folder);
+            if (String.IsNullOrEmpty(root)) continue;
+            string candidate = Path.Combine(root, @"Elektron Transfer\Transfer.exe");
+            if (IsTransferPath(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    bool PickTransfer()
+    {
+        string suggested = IsTransferPath(transferPath) ? transferPath : InstalledTransferPath();
+        using (var dialog = new OpenFileDialog {
+            Title = "Link Elektron Transfer — select Transfer.exe",
+            Filter = "Elektron Transfer (Transfer.exe)|Transfer.exe",
+            FileName = "Transfer.exe",
+            InitialDirectory = suggested == null ? "" : Path.GetDirectoryName(suggested),
+            CheckFileExists = true,
+            RestoreDirectory = true
+        })
+        {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+            if (!IsTransferPath(dialog.FileName))
+            {
+                Tell("Select Transfer.exe from your Elektron Transfer installation.", true);
+                return false;
+            }
+            transferPath = dialog.FileName;
+        }
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(TransferLinkFile));
+            File.WriteAllText(TransferLinkFile, transferPath);
+            Tell("Elektron Transfer linked. Use Project → Open Transfer to launch it.");
+        }
+        catch (IOException error)
+        {
+            Tell("Transfer is linked for this session. Could not save the link. " + error.Message, true);
+        }
+        catch (UnauthorizedAccessException error)
+        {
+            Tell("Transfer is linked for this session. Could not save the link. " + error.Message, true);
+        }
+        return true;
+    }
+
     void OpenTransfer()
     {
-        foreach (string root in new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles) })
+        if (!IsTransferPath(transferPath) && !PickTransfer())
         {
-            string app = Path.Combine(root, @"Elektron Transfer\Transfer.exe");
-            if (File.Exists(app)) { try { Process.Start(app); } catch (Exception e) { Tell(e.Message, true); } return; }
+            Tell("Link Transfer.exe using Project → Link Elektron Transfer to open it from the companion.", true);
+            return;
         }
-        Tell("Elektron Transfer was not found in its standard installation folder.", true);
+        try
+        {
+            using (Process.Start(new ProcessStartInfo(transferPath) {
+                WorkingDirectory = Path.GetDirectoryName(transferPath), UseShellExecute = true
+            })) { }
+            Tell("Opened Elektron Transfer.");
+        }
+        catch (System.ComponentModel.Win32Exception error)
+        {
+            Tell("Could not open Transfer. Use Project → Link Elektron Transfer to check the path. " + error.Message, true);
+        }
     }
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing) projectMenu.Dispose();
         if (disposing && service != null)
         {
             try { if (!service.HasExited) service.Kill(); } catch (InvalidOperationException) { }
