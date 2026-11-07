@@ -775,6 +775,11 @@ const Digitakt = (() => {
   const PATTERNS = 0x200, PATTERN_SIZE = 0x15c00, CONFIG = 0x15aa4;
   const KITS = 0xae0200, KIT_SIZE = 0x5800, PRESETS = 0xda5a04, PRESET_SIZE = 1109;
   const SAMPLES = 0xdc870b, SAMPLE_SIZE = 16, SAMPLE_COUNT = 1024;
+  // Each selector block has one Off value and 127 real sample slots.
+  const BANK_COUNT = 8, BANK_STRIDE = 128, BANK_BYTES = (BANK_STRIDE - 1) * SAMPLE_SIZE;
+  const TRACK_PRESETS = 0x3c, PRESET_MACHINE = 0xd2, MIDI_MACHINE = 5;
+  const PRESET_PARAMETERS = 0x1c, SAMPLE_PARAMETER = 36, LFO_DESTINATIONS = [13, 14, 15];
+  const TRACK_SIZE = 1184, LOCKS = 0x10a04, LOCK_SIZE = 258;
 
   const patternAt = slot => PATTERNS + slot * PATTERN_SIZE;
   const kitAt = slot => KITS + slot * KIT_SIZE;
@@ -838,9 +843,123 @@ const Digitakt = (() => {
     assert(!template.patterns.some(p => p.active), "Choose a blank Digitakt II project exported from Transfer.");
   }
 
-  function compatiblePools(a, b) {
-    return same(a.image.subarray(PRESETS, PRESETS + 128 * PRESET_SIZE), b.image.subarray(PRESETS, PRESETS + 128 * PRESET_SIZE))
-      && same(a.image.subarray(SAMPLES, SAMPLES + SAMPLE_COUNT * SAMPLE_SIZE), b.image.subarray(SAMPLES, SAMPLES + SAMPLE_COUNT * SAMPLE_SIZE));
+  const presetPool = image => image.subarray(PRESETS, PRESETS + 128 * PRESET_SIZE);
+  const samplePool = image => image.subarray(SAMPLES, SAMPLES + (SAMPLE_COUNT - 1) * SAMPLE_SIZE);
+  const bankOffset = bank => SAMPLES + bank * BANK_STRIDE * SAMPLE_SIZE;
+  const sampleBank = (image, bank) => image.subarray(bankOffset(bank), bankOffset(bank) + BANK_BYTES);
+  const sampleParameterAt = PRESET_PARAMETERS + 2 * SAMPLE_PARAMETER;
+  const isSampleDestination = value => value === (SAMPLE_PARAMETER << 8) || value === SAMPLE_PARAMETER;
+
+  function bankIsEmpty(bytes) {
+    const data = view(bytes);
+    for (let offset = 0; offset < bytes.length; offset += SAMPLE_SIZE)
+      if (data.getUint32(offset) !== 0xffffffff) return false;
+    return true;
+  }
+
+  function mergeSampleBanks(image, sources) {
+    const banks = Array(BANK_COUNT).fill(null);
+    const assignments = new Map(sources.map(source => [source, Array(BANK_COUNT).fill(-1)]));
+    function assign(source, original) {
+      const bytes = sampleBank(source.image, original);
+      let bank = original;
+      if (banks[bank] && !same(banks[bank], bytes)) {
+        bank = banks.findIndex(candidate => candidate && same(candidate, bytes));
+        if (bank < 0) bank = banks.indexOf(null);
+      }
+      assert(bank >= 0, "The Digitakt II merge needs more than eight sample banks. Remove unused samples from a copy of a source project and back it up again.");
+      banks[bank] = bytes;
+      assignments.get(source)[original] = bank;
+      image.set(bytes, bankOffset(bank));
+      return bank;
+    }
+    for (const source of sources)
+      for (let bank = 0; bank < BANK_COUNT; bank++)
+        if (!bankIsEmpty(sampleBank(source.image, bank))) assign(source, bank);
+
+    return {
+      slot(source, slot) {
+        assert(slot < SAMPLE_COUNT, "Unsupported Digitakt II sample slot " + slot + ".");
+        const withinBank = slot % BANK_STRIDE;
+        if (!withinBank) return slot;
+        const original = Math.floor(slot / BANK_STRIDE);
+        const assigned = assignments.get(source)[original];
+        return (assigned < 0 ? assign(source, original) : assigned) * BANK_STRIDE + withinBank;
+      },
+      summary() {
+        return sources.map(source => {
+          const letters = "ABCDEFGH";
+          const bankMoves = assignments.get(source).flatMap((bank, original) => bank < 0
+            ? [] : [letters[original] + " → " + letters[bank]]);
+          return source.name + " · " + bankMoves.join(", ");
+        });
+      },
+    };
+  }
+
+  function remapPresetSample(record, source, sampleBanks) {
+    const machine = record[PRESET_MACHINE];
+    if (machine === MIDI_MACHINE || machine === 255) return;
+    assert(machine <= 6, "Unsupported Digitakt II track or preset machine " + machine + ".");
+    const data = view(record);
+    assert(LFO_DESTINATIONS.every(id => !isSampleDestination(data.getUint16(PRESET_PARAMETERS + id * 2))),
+      "This Digitakt II track or preset uses an LFO to change the sample slot. Its sample selection cannot be preserved across different pools.");
+    data.setUint16(sampleParameterAt, sampleBanks.slot(source, data.getUint16(sampleParameterAt)));
+  }
+
+  function mergePresetPools(image, sources, sampleBanks) {
+    const slots = Array(128).fill(null);
+    const changed = new Set();
+    for (const source of sources) {
+      for (let slot = 0; slot < slots.length; slot++) {
+        const start = PRESETS + slot * PRESET_SIZE;
+        const record = source.image.slice(start, start + PRESET_SIZE);
+        if (record[PRESET_MACHINE] === 255) continue;
+        if (sampleBanks) remapPresetSample(record, source, sampleBanks);
+        let target = slot;
+        if (slots[target] && !same(slots[target], record)) {
+          target = slots.findIndex(candidate => candidate && same(candidate, record));
+          if (target < 0) target = slots.indexOf(null);
+        }
+        assert(target >= 0, "The Digitakt II merge needs more than 128 preset slots.");
+        if (target !== slot) changed.add(source);
+        slots[target] = record;
+        image.set(record, PRESETS + target * PRESET_SIZE);
+      }
+    }
+    return changed;
+  }
+
+  function remapPatternSamples(pattern, kit, source, sampleBanks) {
+    const data = view(pattern);
+    const audioTracks = Array.from({ length: 16 }, (_, track) => {
+      const start = TRACK_PRESETS + track * PRESET_SIZE;
+      const record = kit.subarray(start, start + PRESET_SIZE);
+      remapPresetSample(record, source, sampleBanks);
+      return record[PRESET_MACHINE] !== MIDI_MACHINE && record[PRESET_MACHINE] !== 255;
+    });
+    for (let row = 0; row < 80; row++) {
+      const offset = LOCKS + row * LOCK_SIZE;
+      const id = pattern[offset];
+      if (!audioTracks[pattern[offset + 1]] || (id !== SAMPLE_PARAMETER && !LFO_DESTINATIONS.includes(id))) continue;
+      for (let step = 0; step < 128; step++) {
+        const at = offset + 2 + step * 2;
+        const value = data.getUint16(at);
+        if (value === 0xffff) continue;
+        if (id === SAMPLE_PARAMETER) data.setUint16(at, sampleBanks.slot(source, value));
+        else assert(!isSampleDestination(value),
+          "This Digitakt II pattern locks an LFO to the sample slot. Its sample selection cannot be preserved across different pools.");
+      }
+    }
+  }
+
+  function hasPresetLocks(pattern) {
+    // Detect used lanes without assuming which numeric value means the first preset slot.
+    for (let track = 0; track < 16; track++) {
+      const start = 4 + track * TRACK_SIZE + 0x400;
+      if (pattern.subarray(start, start + 128).some(value => value !== 255)) return true;
+    }
+    return false;
   }
 
   async function compose(template, sources, grid) {
@@ -849,13 +968,13 @@ const Digitakt = (() => {
     const used = [...new Set(grid.filter(Boolean).map(ref => sources[ref.project]))];
     assert(used.every(source => source?.format === "dt2prj"), "Digitakt II exports require Digitakt II sources.");
     const first = used[0];
-    for (const source of used.slice(1)) {
-      assert(compatiblePools(first, source),
-        first.name + " and " + source.name + " have different sample or preset pools. This Digitakt II build requires identical slot contents across the projects in an export.");
-    }
     const image = template.image.slice();
-    image.set(first.image.subarray(PRESETS, PRESETS + 128 * PRESET_SIZE), PRESETS);
+    image.set(presetPool(first.image), PRESETS);
     image.set(first.image.subarray(SAMPLES, SAMPLES + SAMPLE_COUNT * SAMPLE_SIZE), SAMPLES);
+    const sampleBanks = used.some(source => !same(samplePool(first.image), samplePool(source.image)))
+      ? mergeSampleBanks(image, used) : null;
+    const presetChanges = sampleBanks || used.some(source => !same(presetPool(first.image), presetPool(source.image)))
+      ? mergePresetPools(image, used, sampleBanks) : new Set();
     grid.forEach((ref, destination) => {
       if (!ref) return;
       const source = sources[ref.project];
@@ -863,6 +982,15 @@ const Digitakt = (() => {
       const p = patternAt(ref.slot), k = kitAt(ref.slot);
       image.set(source.image.subarray(p, p + PATTERN_SIZE), patternAt(destination));
       image.set(source.image.subarray(k, k + KIT_SIZE), kitAt(destination));
+      const targetPattern = image.subarray(patternAt(destination), patternAt(destination) + PATTERN_SIZE);
+      const targetKit = image.subarray(kitAt(destination), kitAt(destination) + KIT_SIZE);
+      try {
+        assert(!presetChanges.has(source) || !hasPresetLocks(targetPattern),
+          "The preset pool changed slot numbers and this pattern has preset locks. Export it separately to preserve those locks.");
+        if (sampleBanks) remapPatternSamples(targetPattern, targetKit, source, sampleBanks);
+      } catch (error) {
+        throw new Error(source.name + " " + Rytm.label(ref.slot) + ". " + error.message);
+      }
     });
     describe(image);
     const payloadName = "DT2 MERGED";
@@ -890,7 +1018,8 @@ const Digitakt = (() => {
       Archive.file("manifest.json", encoder.encode(JSON.stringify(manifest, null, 2)), true),
       Archive.file(payloadName, ProjectPayload.encode(template.header, image), true)
     ]);
-    return { bytes: Archive.build([...parts, ...[...audio.values()].map(item => item.entry)]), bundled: audio.size };
+    return { bytes: Archive.build([...parts, ...[...audio.values()].map(item => item.entry)]), bundled: audio.size,
+      sampleBanks: sampleBanks?.summary() };
   }
 
   async function kitBackup(projects) {
@@ -1186,7 +1315,7 @@ async function handle(message, device) {
       checkTargetFirmware(message.grid);
       const result = await adapters[template.format].compose(template, sources, message.grid, lock);
       await newFile(message.file, result.bytes);
-      return { bundled: result.bundled, missing: result.missing };
+      return { bundled: result.bundled, missing: result.missing, sampleBanks: result.sampleBanks };
     }
     case "kits": {
       const projects = sources.filter(p => message.device === "dt2prj" ? p.format === "dt2prj" : p.format !== "dt2prj");

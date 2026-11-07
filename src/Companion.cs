@@ -1070,6 +1070,9 @@ sealed class ProjectEditor : UserControl
             if (result.ContainsKey("bundled")) sampleNote = "Bundled samples: " + Int(result, "bundled") + ".";
             if (result.ContainsKey("missing") && Int(result, "missing") > 0)
                 sampleNote += " " + Int(result, "missing") + " sample identities need audio on the +Drive.";
+            if (result.ContainsKey("sampleBanks"))
+                sampleNote += "\n\nSample banks (source to export):\n"
+                    + string.Join("\n", Items(result["sampleBanks"]).Select(item => Convert.ToString(item)).ToArray());
             Tell("Saved " + file);
         }, "Project could not be exported");
         if (saved && !IsDisposed)

@@ -11,9 +11,9 @@ A Windows project editor for arranging live sets from local Elektron backups. Br
 | Device | Files | Current coverage |
 | --- | --- | --- |
 | Analog Rytm MKII | .arprj and whole-project .syx | Move patterns with their parameter locks, saved kits and sounds used by sound locks. Update their slot references and bundle available sample audio in .arprj. Export linked kits as separate SysEx files. |
-| Digitakt II | .dt2prj, project image v4 | Move complete patterns with their parameter locks and paired kit records. Merge projects with identical sample and preset slot contents, and bundle available audio. Export raw kit records for archival use. File-level testing used a real OS 1.15C backup. OS 1.17 and hardware restore are unverified. |
+| Digitakt II | .dt2prj, project image v4 | Move patterns with their parameter locks and paired kits. Merge sample banks, update track assignments and sample locks, and bundle available audio. Merge preset pools when the references can be kept intact. Export raw kit records for archival use. File tests used real OS 1.15C backups. OS 1.17 and hardware restore are unverified. |
 
-Each arrangement uses one device and one file format. The template supplies songs and project-wide settings. The Digitakt II adapter rejects conflicting pools because relocating a sample can also change sample locks or modulation. Testing safe relocation is an open contribution area.
+Each arrangement uses one device and one file format. The template supplies songs and project-wide settings. On Digitakt II, EPC keeps each source sample bank together and shows where it landed after export. This can require more banks than combining individual samples. Export stops if the merge exceeds eight banks or 128 preset slots, if a preset with trig locks would have to change slots, or if EPC detects modulation of sample selection in a merged pool.
 
 ## Run on Windows
 
@@ -39,7 +39,7 @@ EPC accepts version 9 Rytm backups with a version 4 settings record, as used by 
 
 The upstream mod catalogues list modules. Elekloader generates the storage lockfile when a firmware configuration is built, so a custom build may have no public match. For a private build, use the local JSON from the build output. The [companion registry](https://github.com/Claptom-music/elektron-project-companion/tree/main/firmware/analog-rytm-mk2) accepts verified public layouts.
 
-To run the Digitakt II archive test with your own disposable fixture, build and run **node test/verify-digitakt.cjs PATH_TO_YOUR_DT2PRJ**. The test derives a temporary blank image in memory and checks the exported pattern and kit bytes, sample archive and slot conflict handling.
+To run the Digitakt II archive test with your own disposable fixture, run **node test/verify-digitakt.cjs PATH_TO_YOUR_DT2PRJ**. The test derives a temporary blank image in memory and checks pattern and kit bytes, audio bundling and sample bank relocation.
 
 ## Help build this
 
