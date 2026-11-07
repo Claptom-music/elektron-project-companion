@@ -16,10 +16,10 @@ Each arrangement uses one device and one file format. The template supplies song
 Build with Node.js 24 and the Windows .NET Framework C# compiler.
 
 1. From the repository root, run **powershell -File build.ps1**.
-2. Open **dist/Elektron Project Companion.exe**. Keep **project-core.cjs** beside it.
-3. Import source backups and choose a blank project exported by Transfer from the same device.
+2. Open **dist/Elektron Project Companion.exe**. Keep **project-core.cjs** beside it. On first launch, select **Transfer.exe** in the link prompt. You can skip this and link it later from the **Project** menu.
+3. Use the **Project** menu to import source backups and choose a blank project exported by Transfer from the same device.
 4. Drag a source pattern to a free destination. Drag or select placed patterns to move or swap them.
-5. Save a workspace or export a project. Use **Open Transfer** and import the export into a free project slot. Check playback, kits and samples on the machine before relying on the set.
+5. Save a workspace or export a project from the **Project** menu. Choose **Project → Open Transfer** and import the export into a free project slot. Check playback, kits and samples on the machine before relying on the set.
 
 The app reads and writes local files. Transfer handles the connection to your instrument. The Windows launcher finds Node on PATH or beside the app. You can also point **ELEKTRON_COMPANION_NODE** at a Node.js 24 executable.
 
