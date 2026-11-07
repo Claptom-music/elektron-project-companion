@@ -618,6 +618,7 @@ const Native = (() => {
   }
 
   function parseLock(lock) {
+    lock = lock?.store ?? lock;
     const id = Number(lock?.id);
     const tracks = lock?.split?.track, patterns = lock?.split?.pattern;
     assert(lock?.device === "analog-rytm-mk2" && Number.isInteger(id) && id > 0 && id <= 0xffffffff
@@ -626,12 +627,16 @@ const Native = (() => {
     return { id, tracks, patterns };
   }
 
+  function projectLayout(project) {
+    return project.version === 9 ? layoutId(modBytes(project)) : 0;
+  }
+
   function copyModSettings(template, projects, grid, target, lock) {
     const destination = modBytes(template);
     const sources = new Map();
     const usedProjects = new Set(grid.filter(Boolean).map(ref => ref.project));
     for (const id of usedProjects) sources.set(id, modBytes(projects[id]));
-    if (!layoutId(destination) && ![...sources.values()].some(layoutId)) return;
+    if (template.version !== 9 && ![...usedProjects].some(id => projects[id].version === 9)) return;
     assert(lock && template.version === 9 && layoutId(destination) === lock.id,
       "Use a blank .arprj from the same modified firmware and load its elekloader storage lockfile to carry pattern mod settings.");
     const trackSize = 13 * lock.tracks;
@@ -640,7 +645,8 @@ const Native = (() => {
       if (!ref) return;
       const source = sources.get(ref.project);
       const id = layoutId(source);
-      assert(!id || (id === lock.id && source[7] === destination[7] && source[8] === destination[8]),
+      assert(projects[ref.project].version !== 9
+        || (id === lock.id && source[7] === destination[7] && source[8] === destination[8]),
         "The source and template use different mod layouts or pattern generations.");
       const fromTracks = MOD_HEADER + (ref.slot + 1) * trackSize;
       const fromPattern = patternStart + (ref.slot + 1) * lock.patterns;
@@ -748,7 +754,7 @@ const Native = (() => {
     return { bytes: Archive.build(entries), count };
   }
 
-  return { parse, compose, kitBackup, parseLock, decodePayload, encodePayload };
+  return { parse, compose, kitBackup, parseLock, projectLayout, decodePayload, encodePayload };
 })();
 
 "use strict";
@@ -920,14 +926,40 @@ const adapters = {
   dt2prj: Digitakt,
 };
 let sources = [], template = null, lock = null;
+let firmwareProfile = null;
 
 function summarize(project) {
   return project ? { name: project.name, format: project.format, patterns: project.patterns,
-    firmware: project.manifest?.FirmwareVersion || "", version: project.version || 0 } : null;
+    firmware: project.manifest?.FirmwareVersion || "", version: project.version || 0,
+    modStorage: project.format === "arprj" && project.version === 9,
+    layout: project.format === "arprj" ? Native.projectLayout(project) : 0 } : null;
 }
 
 function state() {
-  return { sources: sources.map(summarize), template: summarize(template), hasLock: !!lock };
+  return { sources: sources.map(summarize), template: summarize(template), hasLock: !!lock, firmwareProfile };
+}
+
+function readFirmwareProfile(profile) {
+  if (profile == null) return null;
+  Archive.assert(["stock", "modwerk", "elekloader", "octabam", "other"].includes(profile.source)
+    && typeof profile.standardLayout === "boolean", "Invalid firmware profile.");
+  return { source: profile.source, standardLayout: profile.standardLayout };
+}
+
+function checkTargetFirmware(grid) {
+  const usesModStorage = template.format === "arprj" && (template.version === 9
+    || grid.some(ref => ref && sources[ref.project].format === "arprj" && sources[ref.project].version === 9));
+  const source = firmwareProfile?.source;
+  Archive.assert(source !== "octabam", "Octabam targets Octatrack. The companion cannot export Octatrack projects yet.");
+  Archive.assert(source !== "other", "This firmware has no verified project layout. Export is unavailable for this profile.");
+  if (usesModStorage) {
+    Archive.assert(source !== "stock", "This arrangement uses tagged Rytm mod storage. Choose the matching modified firmware profile.");
+    Archive.assert(template.version === 9 && lock && lock.id === Native.projectLayout(template),
+      "Choose a blank .arprj from the matching modded Rytm and load its storage lockfile before exporting.");
+  } else if (source === "modwerk" || source === "elekloader") {
+    Archive.assert(firmwareProfile.standardLayout,
+      "Confirm that your firmware uses the standard project layout, or choose a tagged Rytm template and its matching lockfile.");
+  }
 }
 
 function parse(bytes, name) {
@@ -981,12 +1013,20 @@ async function handle(message) {
     case "template": {
       const candidate = await fromFile(message.file);
       adapters[candidate.format].assertTemplate(candidate);
+      if (template && template.format !== candidate.format) firmwareProfile = null;
+      if (candidate.format !== "arprj" || lock?.id !== Native.projectLayout(candidate)) lock = null;
       template = candidate;
-      lock = null;
       return state();
     }
     case "lock": {
-      lock = Native.parseLock(JSON.parse(await fs.readFile(message.file, "utf8")));
+      const candidate = Native.parseLock(JSON.parse((await fs.readFile(message.file, "utf8")).replace(/^\uFEFF/, "")));
+      Archive.assert(template?.format === "arprj" && candidate.id === Native.projectLayout(template),
+        "This lockfile's layout ID does not match the blank Rytm template.");
+      lock = candidate;
+      return state();
+    }
+    case "firmware": {
+      firmwareProfile = readFirmwareProfile(message.profile);
       return state();
     }
     case "save": {
@@ -995,7 +1035,7 @@ async function handle(message) {
       const estimatedSize = [template, ...sources].filter(Boolean).reduce((sum, p) => sum + Math.ceil(p.bytes.length / 3) * 4 + 1024, 0);
       Archive.assert(estimatedSize <= Archive.MAX_FILE, "The workspace exceeds 256 MB.");
       await newFile(message.file, JSON.stringify({ format: "rytm-set-builder", version: 2, template: projectRecord(template),
-        projects: sources.map(projectRecord), grid: message.grid, lock: serialLock }));
+        projects: sources.map(projectRecord), grid: message.grid, lock: serialLock, firmwareProfile }));
       return {};
     }
     case "open": {
@@ -1008,16 +1048,19 @@ async function handle(message) {
       const candidate = data.template ? await decodeRecord(data.template) : null;
       if (candidate) adapters[candidate.format].assertTemplate(candidate);
       const candidateLock = data.lock ? Native.parseLock(data.lock) : null;
+      const profile = readFirmwareProfile(data.firmwareProfile);
       validateGrid(data.grid, projects);
       sources = projects;
       template = candidate;
-      lock = candidateLock;
+      lock = candidate?.format === "arprj" && candidateLock?.id === Native.projectLayout(candidate) ? candidateLock : null;
+      firmwareProfile = profile;
       return { ...state(), grid: data.grid };
     }
     case "export": {
       validateGrid(message.grid, sources);
       Archive.assert(template && path.extname(message.file).toLowerCase() === "." + template.format,
         "Choose a blank template and save with its project extension.");
+      checkTargetFirmware(message.grid);
       const result = await adapters[template.format].compose(template, sources, message.grid, lock);
       await newFile(message.file, result.bytes);
       return { bundled: result.bundled, missing: result.missing };
