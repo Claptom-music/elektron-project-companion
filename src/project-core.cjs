@@ -1098,7 +1098,12 @@ async function handle(message, device) {
       return { ...state(), added, empty, errors };
     }
     case "template": {
-      const candidate = await fromFile(message.file, device);
+      let candidate;
+      try { candidate = await fromFile(message.file, device); }
+      catch (error) {
+        if (error.code !== "EMPTY_PROJECT") throw error;
+        throw new Error("This backup is from an unused project slot. Create and save a new empty project on the instrument, then back up that saved project.");
+      }
       adapters[candidate.format].assertTemplate(candidate);
       if (template && template.format !== candidate.format) firmwareProfile = null;
       if (candidate.format !== "arprj" || lock?.id !== Native.projectLayout(candidate)) lock = null;
@@ -1158,8 +1163,9 @@ async function handle(message, device) {
     }
     case "export": {
       validateGrid(message.grid, sources);
-      Archive.assert(template && path.extname(message.file).toLowerCase() === "." + template.format,
-        "Choose a blank template and save with its project extension.");
+      Archive.assert(template, "Load a blank project template before exporting.");
+      Archive.assert(path.extname(message.file).toLowerCase() === "." + template.format,
+        "Save the merged project with the ." + template.format + " extension.");
       checkTargetFirmware(message.grid);
       const result = await adapters[template.format].compose(template, sources, message.grid, lock);
       await newFile(message.file, result.bytes);
@@ -1181,7 +1187,7 @@ if (require.main === module) {
   (async () => {
     for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {
       try {
-        const value = await handle(JSON.parse(line), device);
+        const value = await handle(JSON.parse(line.replace(/^\uFEFF/, "")), device);
         process.stdout.write(JSON.stringify({ ok: true, value }) + "\n");
       } catch (error) {
         process.stdout.write(JSON.stringify({ ok: false, error: error.code === "EEXIST"
