@@ -9,17 +9,191 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
+[assembly: System.Reflection.AssemblyTitle(Companion.ProjectName)]
+[assembly: System.Reflection.AssemblyProduct(Companion.ProjectName)]
+[assembly: System.Reflection.AssemblyVersion("0.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.1.0-beta")]
+
 sealed class Companion : Form
 {
-    const string Filter = "Elektron project backups|*.arprj;*.dt2prj;*.syx";
+    internal const string ProjectName = "EPC: Electron Project Companion";
+    const string ReleaseLabel = "Beta 0.1";
+    internal static readonly Color Muted = Color.FromArgb(180, 190, 174);
+    readonly TabControl tabs = new TabControl { Dock = DockStyle.Fill, Margin = Padding.Empty };
+    readonly Label status = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+    readonly ProjectEditor[] editors;
+    ProjectEditor ActiveEditor { get { return editors[tabs.SelectedIndex]; } }
+    string transferPath;
+    static readonly string TransferLinkFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Elektron Project Companion", "transfer-path.txt");
+
+    [STAThread]
+    public static void Main(string[] args)
+    {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        if (args.Length == 1 && args[0] == "--smoke")
+        {
+            using (var app = new Companion())
+                if (!app.editors.All(editor => editor.CheckEngine())) Environment.ExitCode = 1;
+            return;
+        }
+        Application.Run(new Companion());
+    }
+
+    public Companion()
+    {
+        Text = ProjectName;
+        MinimumSize = new Size(920, 650);
+        var screenSize = Screen.FromPoint(Cursor.Position).WorkingArea.Size;
+        Size = new Size(Math.Min(1420, screenSize.Width), Math.Min(820, screenSize.Height));
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Color.FromArgb(18, 20, 17);
+        ForeColor = Color.WhiteSmoke;
+        Font = new Font("Segoe UI", 10);
+        KeyPreview = true;
+
+        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 3 };
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 59));
+        shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        shell.Controls.Add(new Label { Text = ProjectName, Font = new Font("Segoe UI Semibold", 23),
+            ForeColor = Color.FromArgb(204, 244, 129), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        editors = new[] { new ProjectEditor(this, false), new ProjectEditor(this, true) };
+        foreach (var editor in editors)
+        {
+            var page = new TabPage(editor.DeviceName) { BackColor = BackColor, ForeColor = ForeColor, Padding = new Padding(6) };
+            page.Controls.Add(editor);
+            tabs.TabPages.Add(page);
+        }
+        tabs.SelectedIndex = 0;
+        shell.Controls.Add(tabs, 0, 1);
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, ColumnCount = 2, RowCount = 1 };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.Controls.Add(status, 0, 0);
+        footer.Controls.Add(new Label { Text = ReleaseLabel, AutoSize = true, Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleRight, ForeColor = Muted }, 1, 0);
+        shell.Controls.Add(footer, 0, 2);
+        Controls.Add(shell);
+        tabs.SelectedIndexChanged += delegate { RefreshStatus(); };
+        KeyDown += delegate(object sender, KeyEventArgs args) { ActiveEditor.HandleShortcut(args); };
+        Shown += delegate {
+            transferPath = LoadTransferPath(TransferLinkFile);
+            if (!IsTransferPath(transferPath)) PickTransfer();
+        };
+        RefreshStatus();
+    }
+
+    internal void RefreshStatus()
+    {
+        if (tabs.SelectedIndex < 0) return;
+        status.Text = ActiveEditor.StatusText;
+        status.ForeColor = ActiveEditor.StatusColor;
+    }
+
+    void Tell(string text, bool error = false) { ActiveEditor.Tell(text, error); }
+
+    static bool IsTransferPath(string file)
+    {
+        return !String.IsNullOrEmpty(file) && File.Exists(file)
+            && String.Equals(Path.GetFileName(file), "Transfer.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static string LoadTransferPath(string linkFile)
+    {
+        try { return File.ReadAllText(linkFile).Trim(); }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    static string InstalledTransferPath()
+    {
+        foreach (var folder in new[] { Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.ProgramFiles })
+        {
+            string root = Environment.GetFolderPath(folder);
+            if (String.IsNullOrEmpty(root)) continue;
+            string candidate = Path.Combine(root, @"Elektron Transfer\Transfer.exe");
+            if (IsTransferPath(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    internal bool PickTransfer()
+    {
+        string suggested = IsTransferPath(transferPath) ? transferPath : InstalledTransferPath();
+        using (var dialog = new OpenFileDialog {
+            Title = "Link Elektron Transfer — select Transfer.exe",
+            Filter = "Elektron Transfer (Transfer.exe)|Transfer.exe",
+            FileName = "Transfer.exe",
+            InitialDirectory = suggested == null ? "" : Path.GetDirectoryName(suggested),
+            CheckFileExists = true,
+            RestoreDirectory = true
+        })
+        {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+            if (!IsTransferPath(dialog.FileName))
+            {
+                Tell("Select Transfer.exe from your Elektron Transfer installation.", true);
+                return false;
+            }
+            transferPath = dialog.FileName;
+        }
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(TransferLinkFile));
+            File.WriteAllText(TransferLinkFile, transferPath);
+            Tell("Elektron Transfer linked. Use Project → Open Transfer to launch it.");
+        }
+        catch (IOException error)
+        {
+            Tell("Transfer is linked for this session. Could not save the link. " + error.Message, true);
+        }
+        catch (UnauthorizedAccessException error)
+        {
+            Tell("Transfer is linked for this session. Could not save the link. " + error.Message, true);
+        }
+        return true;
+    }
+
+    internal void OpenTransfer()
+    {
+        if (!IsTransferPath(transferPath) && !PickTransfer())
+        {
+            Tell("Link Transfer.exe using Project → Link Elektron Transfer to open it from the companion.", true);
+            return;
+        }
+        try
+        {
+            using (Process.Start(new ProcessStartInfo(transferPath) {
+                WorkingDirectory = Path.GetDirectoryName(transferPath), UseShellExecute = true
+            })) { }
+            Tell("Opened Elektron Transfer.");
+        }
+        catch (System.ComponentModel.Win32Exception error)
+        {
+            Tell("Could not open Transfer. Use Project → Link Elektron Transfer to check the path. " + error.Message, true);
+        }
+    }
+}
+
+sealed class ProjectEditor : UserControl
+{
+    readonly Companion host;
+    readonly bool digitakt;
+    string BackupFilter { get { return digitakt ? "Digitakt II projects|*.dt2prj" : "Analog Rytm MKII backups|*.arprj;*.syx"; } }
+    internal string DeviceName { get { return digitakt ? "Digitakt II" : "Analog Rytm MKII"; } }
+    internal string StatusText { get; private set; }
+    internal Color StatusColor { get; private set; }
     readonly Color surface = Color.FromArgb(29, 32, 28);
-    readonly Color muted = Color.FromArgb(180, 190, 174);
+    readonly Color muted = Companion.Muted;
     readonly Color accent = Color.FromArgb(204, 244, 129);
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
     readonly ComboBox projects = new ComboBox();
     readonly ListView library = new ListView();
     readonly DataGridView grid = new DataGridView();
-    readonly Label status = new Label();
     readonly Label templateText = new Label();
     readonly Label info = new Label();
     readonly CheckBox all = new CheckBox();
@@ -37,12 +211,8 @@ sealed class Companion : Form
     Process service;
     Button lockButton;
     ToolStripMenuItem exportItem;
-    string transferPath;
     bool busy, refreshing;
     static readonly string Root = AppDomain.CurrentDomain.BaseDirectory;
-    static readonly string TransferLinkFile = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Elektron Project Companion", "transfer-path.txt");
 
     sealed class Placement
     {
@@ -50,44 +220,18 @@ sealed class Companion : Form
         public int slot { get; set; }
     }
 
-    [STAThread]
-    public static void Main(string[] args)
+    internal ProjectEditor(Companion host, bool digitakt)
     {
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-        if (args.Length == 1 && args[0] == "--smoke")
-        {
-            using (var app = new Companion())
-            {
-                app.StartService();
-                if (app.Request(Data("op", "import", "files", new string[0])).ContainsKey("sources") == false)
-                    Environment.ExitCode = 1;
-            }
-            return;
-        }
-        Application.Run(new Companion());
-    }
-
-    public Companion()
-    {
-        Text = "Elektron Project Companion";
-        MinimumSize = new Size(920, 650);
-        Size = new Size(1420, 820);
-        StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(18, 20, 17);
-        ForeColor = Color.WhiteSmoke;
-        Font = new Font("Segoe UI", 10);
-        KeyPreview = true;
-
-        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 5 };
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 59));
+        this.host = host;
+        this.digitakt = digitakt;
+        Dock = DockStyle.Fill;
+        StatusText = digitakt ? "Import .dt2prj backups. Select or drag patterns into the destination grid."
+            : "Import .arprj or .syx backups. Select or drag patterns into the destination grid.";
+        StatusColor = muted;
+        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 37));
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-        var title = new Label { Text = "Elektron Project Companion", Font = new Font("Segoe UI Semibold", 23),
-            ForeColor = accent, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-        shell.Controls.Add(title, 0, 0);
         var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
         var projectButton = Add(bar, "&Project ▾", () => projectMenu.Show(
             bar.Controls[0], new Point(0, bar.Controls[0].Height)));
@@ -100,15 +244,15 @@ sealed class Companion : Form
         AddProjectAction("Save workspace…", SaveWorkspace);
         exportItem = AddProjectAction("Export project…", Export);
         AddProjectAction("Firmware compatibility…", () => ConfigureFirmware());
-        AddProjectAction("Find Rytm lockfile…", () => FindLock());
+        if (!digitakt) AddProjectAction("Find Rytm lockfile…", () => FindLock());
         projectMenu.Items.Add(new ToolStripSeparator());
-        AddProjectAction("Open Transfer", OpenTransfer);
-        AddProjectAction("Link Elektron Transfer…", () => PickTransfer());
-        shell.Controls.Add(bar, 0, 1);
+        AddProjectAction("Open Transfer", host.OpenTransfer);
+        AddProjectAction("Link Elektron Transfer…", () => host.PickTransfer());
+        shell.Controls.Add(bar, 0, 0);
         templateText.Dock = DockStyle.Fill;
         templateText.TextAlign = ContentAlignment.MiddleLeft;
         templateText.ForeColor = muted;
-        shell.Controls.Add(templateText, 0, 2);
+        shell.Controls.Add(templateText, 0, 1);
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 295));
@@ -174,6 +318,7 @@ sealed class Companion : Form
         grid.MultiSelect = false;
         grid.RowHeadersWidth = 42;
         grid.AllowUserToAddRows = grid.AllowUserToDeleteRows = grid.AllowUserToResizeRows = false;
+        grid.AllowUserToResizeColumns = false;
         grid.ColumnHeadersHeight = 28;
         grid.SelectionMode = DataGridViewSelectionMode.CellSelect;
         grid.RowTemplate.Height = 51;
@@ -184,7 +329,9 @@ sealed class Companion : Form
         grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(69, 88, 44);
         grid.DefaultCellStyle.SelectionForeColor = Color.White;
         for (int i = 0; i < 16; i++) grid.Columns.Add(new DataGridViewTextBoxColumn {
-            Name = "slot" + i, HeaderText = (i + 1).ToString("00"), Width = 65, SortMode = DataGridViewColumnSortMode.NotSortable });
+            Name = "slot" + i, HeaderText = (i + 1).ToString("00"), MinimumWidth = 24, SortMode = DataGridViewColumnSortMode.NotSortable });
+        grid.ClientSizeChanged += delegate { FitColumns(); };
+        FitColumns();
         grid.Rows.Add(8);
         for (int i = 0; i < 8; i++) grid.Rows[i].HeaderCell.Value = ((char)('A' + i)).ToString();
         grid.CellClick += delegate(object s, DataGridViewCellEventArgs e) {
@@ -218,24 +365,26 @@ sealed class Companion : Form
         };
         right.Controls.Add(grid, 0, 1);
         layout.Controls.Add(right, 1, 0);
-        shell.Controls.Add(layout, 0, 3);
-        status.Dock = DockStyle.Fill;
-        status.TextAlign = ContentAlignment.MiddleLeft;
-        shell.Controls.Add(status, 0, 4);
+        shell.Controls.Add(layout, 0, 2);
         Controls.Add(shell);
-        KeyDown += delegate(object s, KeyEventArgs e) {
-            if (e.KeyCode == Keys.Delete) Remove();
-            if (e.Control && e.KeyCode == Keys.Z) Undo();
-            if (e.KeyCode == Keys.Escape) { selectedSource = null; selectedSlot = -1; RenderGrid(); }
-        };
-        Shown += delegate {
-            try { StartService(); }
-            catch (Exception error) { Tell(error.Message, true); }
-            transferPath = LoadTransferPath(TransferLinkFile);
-            if (!IsTransferPath(transferPath)) PickTransfer();
-        };
         Render();
-        Tell("Import .arprj or .dt2prj backups. Select or drag patterns into the destination grid.");
+    }
+
+    internal void HandleShortcut(KeyEventArgs e)
+    {
+        if (busy) return;
+        if (e.KeyCode == Keys.Delete) Remove();
+        if (e.Control && e.KeyCode == Keys.Z) Undo();
+        if (e.KeyCode == Keys.Escape) { selectedSource = null; selectedSlot = -1; RenderGrid(); }
+    }
+
+    void FitColumns()
+    {
+        int available = Math.Max(0, grid.ClientSize.Width - grid.RowHeadersWidth - SystemInformation.VerticalScrollBarWidth);
+        int width = available / grid.Columns.Count;
+        int remainder = available % grid.Columns.Count;
+        foreach (DataGridViewColumn column in grid.Columns)
+            column.Width = Math.Max(column.MinimumWidth, width + (column.Index < remainder ? 1 : 0));
     }
 
     Button Add(FlowLayoutPanel bar, string caption, Action action)
@@ -271,7 +420,12 @@ sealed class Companion : Form
     static Dictionary<string, object> Map(object value) { return (Dictionary<string, object>)value; }
     Dictionary<string, object> Pattern(Placement p) { return Map(((IList)sources[p.project]["patterns"])[p.slot]); }
 
-    void Tell(string text, bool error = false) { status.Text = text; status.ForeColor = error ? Color.LightSalmon : muted; }
+    internal void Tell(string text, bool error = false)
+    {
+        StatusText = text;
+        StatusColor = error ? Color.LightSalmon : muted;
+        host.RefreshStatus();
+    }
     void Remember() { undo.Push((Placement[])placements.Clone()); }
 
     void Render()
@@ -446,11 +600,17 @@ sealed class Companion : Form
     {
         string core = Path.Combine(Root, "project-core.cjs");
         if (!File.Exists(core)) throw new IOException("Keep project-core.cjs beside the companion executable.");
-        service = Process.Start(new ProcessStartInfo(Node(), "\"" + core + "\"") { UseShellExecute = false, CreateNoWindow = true,
+        service = Process.Start(new ProcessStartInfo(Node(), "\"" + core + "\" " + (digitakt ? "dt2prj" : "arprj")) { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8 });
         service.ErrorDataReceived += delegate { };
         service.BeginErrorReadLine();
+    }
+
+    internal bool CheckEngine()
+    {
+        StartService();
+        return Request(Data("op", "import", "files", new string[0])).ContainsKey("sources");
     }
 
     Dictionary<string, object> Request(Dictionary<string, object> message)
@@ -472,6 +632,7 @@ sealed class Companion : Form
         Tell("Working…");
         try
         {
+            if (service == null) StartService();
             var result = await Task.Run(() => Request(message));
             if (!IsDisposed) done(result);
         }
@@ -508,33 +669,36 @@ sealed class Companion : Form
 
     void ImportFiles()
     {
-        using (var dialog = new OpenFileDialog { Filter = Filter, Multiselect = true })
-            if (dialog.ShowDialog(this) == DialogResult.OK) Import(dialog.FileNames);
+        using (var dialog = new OpenFileDialog { Filter = BackupFilter, Multiselect = true })
+            if (dialog.ShowDialog(host) == DialogResult.OK) Import(dialog.FileNames);
     }
 
     void ImportFolder()
     {
-        using (var dialog = new FolderBrowserDialog { Description = "Choose a folder of local Elektron backups" })
-            if (dialog.ShowDialog(this) == DialogResult.OK)
-                Import(Directory.GetFiles(dialog.SelectedPath).Where(f => new[] { ".arprj", ".dt2prj", ".syx" }
+        using (var dialog = new FolderBrowserDialog { Description = "Choose a folder of " + DeviceName + " backups" })
+            if (dialog.ShowDialog(host) == DialogResult.OK)
+            {
+                var extensions = digitakt ? new[] { ".dt2prj" } : new[] { ".arprj", ".syx" };
+                Import(Directory.GetFiles(dialog.SelectedPath).Where(f => extensions
                     .Contains(Path.GetExtension(f).ToLowerInvariant())).OrderBy(f => f).ToArray());
+            }
     }
 
     string FileToOpen(string filter)
     {
         using (var dialog = new OpenFileDialog { Filter = filter })
-            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+            return dialog.ShowDialog(host) == DialogResult.OK ? dialog.FileName : null;
     }
 
     string FileToSave(string extension, string name)
     {
         using (var dialog = new SaveFileDialog { FileName = name, Filter = "Save file|*." + extension, DefaultExt = extension, AddExtension = true, OverwritePrompt = false })
-            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+            return dialog.ShowDialog(host) == DialogResult.OK ? dialog.FileName : null;
     }
 
     void PickTemplate()
     {
-        string file = FileToOpen(Filter);
+        string file = FileToOpen(BackupFilter);
         if (file == null) return;
         string format = Path.GetExtension(file).TrimStart('.').ToLowerInvariant();
         if (placements.Any(x => x != null && Get(sources[x.project], "format") != format))
@@ -577,7 +741,7 @@ sealed class Companion : Form
             dialog.AcceptButton = online;
             dialog.CancelButton = cancel;
             dialog.Controls.Add(layout);
-            var choice = dialog.ShowDialog(this);
+            var choice = dialog.ShowDialog(host);
             if (choice == DialogResult.OK) request = Data("op", "lock-online", "url", url.Text);
             else if (choice == DialogResult.Retry)
             {
@@ -590,7 +754,7 @@ sealed class Companion : Form
         Call(request, result => {
             SetState(result);
             Tell("Rytm storage lockfile matched to the blank template.");
-            if (next != null) BeginInvoke(next);
+            if (next != null && Visible) BeginInvoke(next);
         });
     }
 
@@ -641,20 +805,20 @@ sealed class Companion : Form
             dialog.AcceptButton = ok;
             dialog.CancelButton = cancel;
             dialog.Controls.Add(layout);
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            if (dialog.ShowDialog(host) != DialogResult.OK) return;
             int selected = choice.SelectedIndex;
             Call(Data("op", "firmware", "profile", Data("source", FirmwareSources[selected],
                 "standardLayout", !tagged && (selected == 1 || selected == 2) && standard.Checked)), result => {
                 SetState(result);
                 Tell("Target firmware set to " + FirmwareName(Get(firmwareProfile, "source")) + ".");
-                if (next != null) BeginInvoke(next);
+                if (next != null && Visible) BeginInvoke(next);
             });
         }
     }
 
     void SaveWorkspace()
     {
-        string file = FileToSave("json", "Elektron set.json");
+        string file = FileToSave("json", DeviceName + " set.json");
         if (file != null) Call(Data("op", "save", "file", file, "grid", placements), result => Tell("Saved workspace to " + file));
     }
 
@@ -697,88 +861,6 @@ sealed class Companion : Form
         string file = FileToSave("zip", Device(device) + " Kit Folders.zip");
         if (file != null) Call(Data("op", "kits", "file", file, "device", device), result =>
             Tell("Saved " + Int(result, "count") + " kit records. Extract the ZIP to browse the project folders."));
-    }
-
-    static bool IsTransferPath(string file)
-    {
-        return !String.IsNullOrEmpty(file) && File.Exists(file)
-            && String.Equals(Path.GetFileName(file), "Transfer.exe", StringComparison.OrdinalIgnoreCase);
-    }
-
-    static string LoadTransferPath(string linkFile)
-    {
-        try { return File.ReadAllText(linkFile).Trim(); }
-        catch (IOException) { return null; }
-        catch (UnauthorizedAccessException) { return null; }
-    }
-
-    static string InstalledTransferPath()
-    {
-        foreach (var folder in new[] { Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.ProgramFiles })
-        {
-            string root = Environment.GetFolderPath(folder);
-            if (String.IsNullOrEmpty(root)) continue;
-            string candidate = Path.Combine(root, @"Elektron Transfer\Transfer.exe");
-            if (IsTransferPath(candidate)) return candidate;
-        }
-        return null;
-    }
-
-    bool PickTransfer()
-    {
-        string suggested = IsTransferPath(transferPath) ? transferPath : InstalledTransferPath();
-        using (var dialog = new OpenFileDialog {
-            Title = "Link Elektron Transfer — select Transfer.exe",
-            Filter = "Elektron Transfer (Transfer.exe)|Transfer.exe",
-            FileName = "Transfer.exe",
-            InitialDirectory = suggested == null ? "" : Path.GetDirectoryName(suggested),
-            CheckFileExists = true,
-            RestoreDirectory = true
-        })
-        {
-            if (dialog.ShowDialog(this) != DialogResult.OK) return false;
-            if (!IsTransferPath(dialog.FileName))
-            {
-                Tell("Select Transfer.exe from your Elektron Transfer installation.", true);
-                return false;
-            }
-            transferPath = dialog.FileName;
-        }
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(TransferLinkFile));
-            File.WriteAllText(TransferLinkFile, transferPath);
-            Tell("Elektron Transfer linked. Use Project → Open Transfer to launch it.");
-        }
-        catch (IOException error)
-        {
-            Tell("Transfer is linked for this session. Could not save the link. " + error.Message, true);
-        }
-        catch (UnauthorizedAccessException error)
-        {
-            Tell("Transfer is linked for this session. Could not save the link. " + error.Message, true);
-        }
-        return true;
-    }
-
-    void OpenTransfer()
-    {
-        if (!IsTransferPath(transferPath) && !PickTransfer())
-        {
-            Tell("Link Transfer.exe using Project → Link Elektron Transfer to open it from the companion.", true);
-            return;
-        }
-        try
-        {
-            using (Process.Start(new ProcessStartInfo(transferPath) {
-                WorkingDirectory = Path.GetDirectoryName(transferPath), UseShellExecute = true
-            })) { }
-            Tell("Opened Elektron Transfer.");
-        }
-        catch (System.ComponentModel.Win32Exception error)
-        {
-            Tell("Could not open Transfer. Use Project → Link Elektron Transfer to check the path. " + error.Message, true);
-        }
     }
 
     protected override void Dispose(bool disposing)
