@@ -9,14 +9,15 @@ A Windows project editor for arranging live sets from local Elektron backups. Br
 ## Latest Beta 0.1 update
 
 - **Digitakt II pool merging.** EPC keeps the starting project's sample slots, reuses matching audio, and fills free slots in order from bank A through H. It merges preset pools and updates track assignments, sample locks, and preset locks when slots move.
-- **Verified with OS 1.15C backups.** Four projects merged into 91 consecutive sample slots in bank A. The export preserved the sample references on all 15 sample locks. A separate test with a preset slot conflict confirmed the preset lock still pointed to the intended preset. Playback after restoring to hardware and OS 1.17 compatibility still need testing.
+- **Verified with OS 1.15C backups.** Four projects merged into 91 consecutive sample slots in bank A. The export preserved the sample references on all 15 sample locks. A separate test with a preset slot conflict confirmed the preset lock still pointed to the intended preset.
+- **Hardware tested on Digitakt II.** The maintainer confirmed the Beta 0.1 merge workflow on the instrument. The firmware version for this hardware test was not recorded.
 
 ## What works today
 
 | Device | Files | Current coverage |
 | --- | --- | --- |
 | Analog Rytm MKII | .arprj and whole-project .syx | Move patterns with their parameter locks, saved kits and sounds used by sound locks. Update their slot references and bundle available sample audio in .arprj. Export linked kits as separate SysEx files. |
-| Digitakt II | .dt2prj, project image v4 | Move patterns with their parameter locks and paired kits. Merge sample and preset pools, update track assignments and sample and preset locks, and bundle available audio. Export raw kit records for archival use. File tests used real OS 1.15C backups. OS 1.17 and hardware restore are unverified. |
+| Digitakt II | .dt2prj, project image v4 | Move patterns with their parameter locks and paired kits. Merge sample and preset pools, update track assignments and sample and preset locks, and bundle available audio. Export raw kit records for archival use. File tests used real OS 1.15C backups. The maintainer confirmed the merge workflow on Digitakt II hardware. OS 1.17 compatibility is still unverified. |
 
 Each arrangement uses one device and one file format. The template supplies songs and project-wide settings. For Digitakt II, the source of the first placed pattern supplies the starting sample pool. EPC reuses matching samples and adds new ones to the next free slot in banks A–H. Export stops if the merged pool exceeds 1,016 sample slots or 128 preset slots, if a preset lock points to an unsupported or missing slot, or if EPC detects modulation of sample selection in a merged pool.
 
@@ -58,7 +59,7 @@ I’m building EPC to make it easier to pull together a live set from the projec
 
 Only attach fixtures you created and can share publicly. A description and reproducible steps are useful even when you keep your music and samples private.
 
-When a new feature is verified, update this README with what changed and what was tested.
+When the maintainer confirms a new feature has been tested on hardware, update this README with what changed and what was tested.
 
 ## Format notes
 
