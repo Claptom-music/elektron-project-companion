@@ -6,6 +6,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -294,13 +295,13 @@ sealed class ProjectEditor : UserControl
         projectButton.AccessibleDescription = "Open the project actions menu.";
         AddProjectAction("Import backups…", ImportFiles);
         AddProjectAction("Open backup folder…", ImportFolder);
-        AddProjectAction("Blank template…", () => PickTemplate());
+        AddProjectAction("Blank template…", async () => { await PickTemplate(); });
         projectMenu.Items.Add(new ToolStripSeparator());
         AddProjectAction("Open workspace…", OpenWorkspace);
         AddProjectAction("Save workspace…", async () => { await SaveWorkspace(); });
         exportItem = AddProjectAction("Export project…", Export);
-        AddProjectAction("Firmware compatibility…", () => ConfigureFirmware());
-        if (!digitakt) AddProjectAction("Find Rytm lockfile…", () => FindLock());
+        AddProjectAction("Firmware compatibility…", async () => { await ConfigureFirmware(); });
+        if (!digitakt) AddProjectAction("Find Rytm lockfile…", async () => { await FindLock(); });
         projectMenu.Items.Add(new ToolStripSeparator());
         AddProjectAction("Open Transfer", host.OpenTransfer);
         AddProjectAction("Link Elektron Transfer…", () => host.PickTransfer());
@@ -354,7 +355,7 @@ sealed class ProjectEditor : UserControl
         var sourceActions = new FlowLayoutPanel { Dock = DockStyle.Fill };
         Add(sourceActions, "Add active", AddActive);
         Add(sourceActions, "Save kit folders", Kits);
-        lockButton = Add(sourceActions, "Find Rytm lockfile", () => FindLock());
+        lockButton = Add(sourceActions, "Find Rytm lockfile", async () => { await FindLock(); });
         left.Controls.Add(sourceActions, 0, 5);
         layout.Controls.Add(left, 0, 0);
 
@@ -755,8 +756,11 @@ sealed class ProjectEditor : UserControl
     Dictionary<string, object> Request(Dictionary<string, object> message)
     {
         if (service == null || service.HasExited) throw new IOException("The project engine is unavailable. Install Node.js 24 or set ELEKTRON_COMPANION_NODE and reopen the app.");
-        service.StandardInput.WriteLine(json.Serialize(message));
-        service.StandardInput.Flush();
+        // The engine reads UTF-8 regardless of the Windows console code page.
+        var bytes = Encoding.UTF8.GetBytes(json.Serialize(message) + "\n");
+        var input = service.StandardInput.BaseStream;
+        input.Write(bytes, 0, bytes.Length);
+        input.Flush();
         string line = service.StandardOutput.ReadLine();
         if (line == null) throw new IOException("The project engine stopped. Reopen the companion.");
         var result = json.Deserialize<Dictionary<string, object>>(line);
@@ -769,7 +773,7 @@ sealed class ProjectEditor : UserControl
         await RunRequest(message, done);
     }
 
-    async Task<bool> RunRequest(Dictionary<string, object> message, Action<Dictionary<string, object>> done)
+    async Task<bool> RunRequest(Dictionary<string, object> message, Action<Dictionary<string, object>> done, string failureTitle = null)
     {
         busy = true;
         foreach (var button in actions) button.Enabled = false;
@@ -782,12 +786,22 @@ sealed class ProjectEditor : UserControl
             done(result);
             return true;
         }
-        catch (Exception error) { if (!IsDisposed) Tell(error.Message, true); return false; }
+        catch (Exception error)
+        {
+            if (!IsDisposed) ReportFailure(error.Message, failureTitle);
+            return false;
+        }
         finally
         {
             busy = false;
             if (!IsDisposed) foreach (var button in actions) button.Enabled = true;
         }
+    }
+
+    void ReportFailure(string message, string title)
+    {
+        Tell(message, true);
+        if (title != null) MessageBox.Show(host, message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
     void SetState(Dictionary<string, object> result)
@@ -837,37 +851,40 @@ sealed class ProjectEditor : UserControl
             return dialog.ShowDialog(host) == DialogResult.OK ? dialog.FileName : null;
     }
 
-    string FileToSave(string extension, string name)
+    string FileToSave(string extension, string name, string title = "")
     {
-        using (var dialog = new SaveFileDialog { FileName = name, Filter = "Save file|*." + extension, DefaultExt = extension, AddExtension = true, OverwritePrompt = false })
+        using (var dialog = new SaveFileDialog { Title = title, FileName = name, Filter = "Save file|*." + extension, DefaultExt = extension, AddExtension = true, OverwritePrompt = false })
             return dialog.ShowDialog(host) == DialogResult.OK ? dialog.FileName : null;
     }
 
-    async void PickTemplate(Action next = null)
+    async Task<bool> PickTemplate()
     {
         var first = placements.FirstOrDefault(p => p != null);
         string extension = first == null ? null : Get(sources[first.project], "format");
         string filter = extension == null ? BackupFilter : "Blank " + DeviceName + " project|*." + extension;
         string file = FileToOpen(filter, "Choose a blank " + DeviceName + " template");
-        if (file == null) return;
+        if (file == null) return false;
         string format = Path.GetExtension(file).TrimStart('.').ToLowerInvariant();
         if (placements.Any(x => x != null && Get(sources[x.project], "format") != format))
         {
-            Tell("The blank template must use the same project format as your arrangement.", true);
-            return;
+            ReportFailure("The blank template must use the same project format as your arrangement.", "Template could not be loaded");
+            return false;
         }
-        bool loaded = await RunRequest(Data("op", "template", "file", file), result => {
+        return await RunRequest(Data("op", "template", "file", file), result => {
             SetState(result);
             workspaceSettingsChanged = true;
             Tell("Blank template ready.");
-        });
-        if (loaded && Visible && next != null) next();
+        }, "Template could not be loaded");
     }
 
-    void FindLock(Action next = null)
+    async Task<bool> FindLock()
     {
         uint id = template == null ? 0 : Convert.ToUInt32(template["layout"]);
-        if (id == 0) { Tell("Choose a blank Rytm .arprj with a detected mod layout first.", true); return; }
+        if (id == 0)
+        {
+            ReportFailure("Choose a blank Rytm .arprj with a detected mod layout first.", "Rytm lockfile required");
+            return false;
+        }
         Dictionary<string, object> request;
         using (var dialog = new Form {
             Text = "Find Rytm lockfile", ClientSize = new Size(560, 208), Font = Font,
@@ -901,26 +918,26 @@ sealed class ProjectEditor : UserControl
             else if (choice == DialogResult.Retry)
             {
                 string file = FileToOpen("Rytm storage lockfile or build manifest|*.json");
-                if (file == null) return;
+                if (file == null) return false;
                 request = Data("op", "lock", "file", file);
             }
-            else return;
+            else return false;
         }
-        Call(request, result => {
+        return await RunRequest(request, result => {
             SetState(result);
             workspaceSettingsChanged = true;
             Tell("Rytm storage lockfile matched to the blank template.");
-            if (next != null && Visible) BeginInvoke(next);
-        });
+        }, "Lockfile could not be loaded");
     }
 
     static readonly string[] FirmwareSources = { "stock", "modwerk", "elekloader", "octabam", "other" };
     static readonly string[] FirmwareNames = { "Stock Elektron", "Modwerk", "Elekloader", "Octabam", "Other or unknown mod" };
     static string FirmwareName(string source) { return FirmwareNames[Array.IndexOf(FirmwareSources, source)]; }
 
-    void ConfigureFirmware(Action next = null)
+    async Task<bool> ConfigureFirmware()
     {
         bool tagged = template != null && (bool)template["modStorage"];
+        Dictionary<string, object> profile;
         using (var dialog = new Form {
             Text = "Firmware compatibility", ClientSize = new Size(460, 234), Font = Font,
             StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
@@ -961,18 +978,18 @@ sealed class ProjectEditor : UserControl
             dialog.AcceptButton = ok;
             dialog.CancelButton = cancel;
             dialog.Controls.Add(layout);
-            if (dialog.ShowDialog(host) != DialogResult.OK) return;
+            if (dialog.ShowDialog(host) != DialogResult.OK) return false;
             int selected = choice.SelectedIndex;
-            Call(Data("op", "firmware", "profile", Data("source", FirmwareSources[selected],
-                "standardLayout", !tagged && (selected == 1 || selected == 2) && standard.Checked)), result => {
-                var previous = firmwareProfile;
-                SetState(result);
-                if (previous == null || Get(previous, "source") != Get(firmwareProfile, "source")
-                    || (bool)previous["standardLayout"] != (bool)firmwareProfile["standardLayout"]) workspaceSettingsChanged = true;
-                Tell("Target firmware set to " + FirmwareName(Get(firmwareProfile, "source")) + ".");
-                if (next != null && Visible) BeginInvoke(next);
-            });
+            profile = Data("source", FirmwareSources[selected],
+                "standardLayout", !tagged && (selected == 1 || selected == 2) && standard.Checked);
         }
+        return await RunRequest(Data("op", "firmware", "profile", profile), result => {
+            var previous = firmwareProfile;
+            SetState(result);
+            if (previous == null || Get(previous, "source") != Get(firmwareProfile, "source")
+                || (bool)previous["standardLayout"] != (bool)firmwareProfile["standardLayout"]) workspaceSettingsChanged = true;
+            Tell("Target firmware set to " + FirmwareName(Get(firmwareProfile, "source")) + ".");
+        }, "Firmware profile could not be set");
     }
 
     void MarkWorkspaceSaved()
@@ -1008,7 +1025,7 @@ sealed class ProjectEditor : UserControl
         });
     }
 
-    void Export()
+    async void Export()
     {
         if (placements.All(p => p == null))
         {
@@ -1018,24 +1035,36 @@ sealed class ProjectEditor : UserControl
         if (template == null)
         {
             Tell("Select a backup of a newly saved, empty project from your " + DeviceName + ".");
-            PickTemplate(Export);
-            return;
+            if (!await PickTemplate()) return;
         }
         string format = Get(template, "format");
         bool tagged = (bool)template["modStorage"];
-        if (firmwareProfile == null && !tagged) { ConfigureFirmware(Export); return; }
+        if (firmwareProfile == null && !tagged && !await ConfigureFirmware()) return;
         if (tagged && !hasFirmwareLock && (firmwareProfile == null
             || new[] { "modwerk", "elekloader" }.Contains(Get(firmwareProfile, "source"))))
         {
             Tell("Choose the storage lockfile from the build used for the blank Rytm template.");
-            FindLock(Export);
+            if (!await FindLock()) return;
+        }
+        if (IsDisposed) return;
+        Tell("Choose where to save the merged project file.");
+        string file = FileToSave(format, (digitakt ? "Digitakt II" : "Rytm") + " Merged." + format, "Save merged " + DeviceName + " project");
+        if (file == null) { Tell("Export canceled before saving a project file."); return; }
+        if (File.Exists(file))
+        {
+            ReportFailure("A file already exists at that location. Choose a new filename for the merged project.", "Project could not be exported");
             return;
         }
-        string file = FileToSave(format, (format == "dt2prj" ? "Digitakt II" : "Rytm") + " Merged." + format);
-        if (file != null) Call(Data("op", "export", "file", file, "grid", placements), result =>
-            Tell("Saved " + Path.GetFileName(file) + (result.ContainsKey("bundled") ? " · " + Int(result, "bundled") + " bundled samples" : "")
-            + (result.ContainsKey("missing") && Int(result, "missing") > 0 ? " · " + Int(result, "missing") + " sample identities need audio on the +Drive" : "")
-            + ". Use Project → Open Transfer to restore."));
+        string sampleNote = "";
+        bool saved = await RunRequest(Data("op", "export", "file", file, "grid", placements), result => {
+            if (result.ContainsKey("bundled")) sampleNote = "Bundled samples: " + Int(result, "bundled") + ".";
+            if (result.ContainsKey("missing") && Int(result, "missing") > 0)
+                sampleNote += " " + Int(result, "missing") + " sample identities need audio on the +Drive.";
+            Tell("Saved " + file);
+        }, "Project could not be exported");
+        if (saved && !IsDisposed)
+            MessageBox.Show(host, "Saved the merged project to:\n\n" + file + "\n\nUse Project → Open Transfer to restore it."
+                + (sampleNote.Length > 0 ? "\n\n" + sampleNote.Trim() : ""), "Project exported", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     void Kits()
