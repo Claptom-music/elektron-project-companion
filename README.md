@@ -6,8 +6,8 @@ A Windows project editor for arranging live sets from local Elektron backups. Br
 
 | Device | Files | Current coverage |
 | --- | --- | --- |
-| Analog Rytm MKII | .arprj and whole-project .syx | Arrange and merge patterns, kits, sound locks and sample references. Bundle available sample audio in .arprj. Export linked kits as separate SysEx files. |
-| Digitakt II | .dt2prj, project image v4 | Arrange patterns with their paired kit records. Merge projects with identical sample and preset slot contents, and bundle available audio. Export raw kit records for archival use. File-level testing used a real OS 1.15C backup. OS 1.17 and hardware restore are unverified. |
+| Analog Rytm MKII | .arprj and whole-project .syx | Move patterns with their parameter locks, saved kits and sounds used by sound locks. Update their slot references and bundle available sample audio in .arprj. Export linked kits as separate SysEx files. |
+| Digitakt II | .dt2prj, project image v4 | Move complete patterns with their parameter locks and paired kit records. Merge projects with identical sample and preset slot contents, and bundle available audio. Export raw kit records for archival use. File-level testing used a real OS 1.15C backup. OS 1.17 and hardware restore are unverified. |
 
 Each arrangement uses one device and one file format. The template supplies songs and project-wide settings. The Digitakt II adapter rejects conflicting pools because relocating a sample can also change sample locks or modulation. Testing safe relocation is an open contribution area.
 
@@ -22,6 +22,10 @@ Build with Node.js 24 and the Windows .NET Framework C# compiler.
 5. Save a workspace or export a project from the **Project** menu. Choose **Project → Open Transfer** and import the export into a free project slot. Check playback, kits and samples on the machine before relying on the set.
 
 The app reads and writes local files. Transfer handles the connection to your instrument. The Windows launcher finds Node on PATH or beside the app. You can also point **ELEKTRON_COMPANION_NODE** at a Node.js 24 executable.
+
+**Project → Firmware compatibility** sets the destination firmware for the workspace. The companion asks before the first export when the backup does not identify a mod layout. For Modwerk or Elekloader builds that use the standard project layout, confirm that layout in the dialog.
+
+The companion detects tagged Analog Rytm MKII mod storage. Use a blank **.arprj** from the matching firmware build and load its storage lockfile or a build manifest containing the lockfile. The exporter checks the layout ID and track and pattern generations before moving mod data to the new slots. Octabam targets Octatrack, whose projects do not yet have an export adapter. [Elekloader mod storage](https://github.com/elekloader/elekloader/blob/main/docs/ADAPTING.md#mod-storage-core-ar2-02-analog-rytm-mkii) · [Octabam](https://github.com/sambanks/octabam)
 
 To run the Digitakt II archive test with your own disposable fixture, build and run **node test/verify-digitakt.cjs PATH_TO_YOUR_DT2PRJ**. The test derives a temporary blank image in memory and checks the exported pattern and kit bytes, sample archive and slot conflict handling.
 
