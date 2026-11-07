@@ -21,7 +21,7 @@ Build with Node.js 24 and the Windows .NET Framework C# compiler.
 2. Open **dist/EPC - Electron Project Companion.exe**. Keep **project-core.cjs** beside it. On first launch, select **Transfer.exe** in the link prompt. You can skip this and link it later from the **Project** menu.
 3. Choose the **Analog Rytm MKII** or **Digitakt II** tab. Use its **Project** menu to import backups. Each tab keeps its own arrangement and workspace.
 4. Drag a source pattern onto a slot to place or replace it. Use **Undo** to recover a replaced pattern. Drag or select placed patterns to move or swap them.
-5. Save a workspace or export a project from the **Project** menu. When you export, EPC asks for a backup of a blank project from the same device if you haven't loaded one yet. Choose **Project → Open Transfer** and import the export into a free project slot. Check playback, kits and samples on the machine before relying on the set.
+5. Save a workspace or export a project from the **Project** menu. If you haven't loaded a template, select a backup of a saved, empty project from the same device. Complete any firmware prompts, then choose a new filename in **Save merged project**. EPC confirms the output path after it writes the file. Choose **Project → Open Transfer** and import the export into a free project slot. Check playback, kits and samples on the machine before relying on the set.
 
 When closing EPC, you can save or discard unsaved changes for each device workspace, or cancel and keep editing.
 
