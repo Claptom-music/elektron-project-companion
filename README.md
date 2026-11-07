@@ -20,8 +20,10 @@ Build with Node.js 24 and the Windows .NET Framework C# compiler.
 1. From the repository root, run **powershell -File build.ps1**.
 2. Open **dist/EPC - Electron Project Companion.exe**. Keep **project-core.cjs** beside it. On first launch, select **Transfer.exe** in the link prompt. You can skip this and link it later from the **Project** menu.
 3. Choose the **Analog Rytm MKII** or **Digitakt II** tab. Use its **Project** menu to import backups and choose a blank project exported by Transfer from that device. Each tab keeps its own arrangement and workspace.
-4. Drag a source pattern to a free destination. Drag or select placed patterns to move or swap them.
+4. Drag a source pattern onto a slot to place or replace it. Use **Undo** to recover a replaced pattern. Drag or select placed patterns to move or swap them.
 5. Save a workspace or export a project from the **Project** menu. Choose **Project → Open Transfer** and import the export into a free project slot. Check playback, kits and samples on the machine before relying on the set.
+
+When closing EPC, you can save or discard unsaved changes for each device workspace, or cancel and keep editing.
 
 The app reads and writes local project files. Transfer handles the connection to your instrument. The Windows launcher finds Node on PATH or beside the app. You can also point **ELEKTRON_COMPANION_NODE** at a Node.js 24 executable.
 
