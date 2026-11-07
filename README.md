@@ -31,6 +31,8 @@ The app reads and writes local project files. Transfer handles the connection to
 
 The companion detects tagged Analog Rytm MKII mod storage. Use a blank **.arprj** from the matching firmware build and load its storage lockfile or a build manifest containing the lockfile. The exporter checks the layout ID and track and pattern generations before moving mod data to the new slots. Octabam targets Octatrack, whose projects do not yet have an export adapter. [Elekloader mod storage](https://github.com/elekloader/elekloader/blob/main/docs/ADAPTING.md#mod-storage-core-ar2-02-analog-rytm-mkii) · [Octabam](https://github.com/sambanks/octabam)
 
+EPC accepts version 9 Rytm backups with a version 4 settings record, as used by MF06. A blank template with empty mod storage can be used to merge stock patterns. To move patterns with tagged mod data, load and save the blank project on the Rytm before backing it up so its layout can be matched.
+
 **Project → Find Rytm lockfile** can check the companion's GitHub registry by layout ID, load a public JSON link from GitHub, Modwerk or Elekloader, or open a local file. Online lookup is opt-in. It sends the file request only, with no project or firmware contents. Save the workspace to keep the accepted lockfile data for offline use.
 
 The upstream mod catalogues list modules. Elekloader generates the storage lockfile when a firmware configuration is built, so a custom build may have no public match. For a private build, use the local JSON from the build output. The [companion registry](https://github.com/Claptom-music/elektron-project-companion/tree/main/firmware/analog-rytm-mk2) accepts verified public layouts.
